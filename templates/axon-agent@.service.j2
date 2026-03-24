@@ -1,0 +1,15 @@
+[Unit]
+Description=AXON Agent %i
+After=network.target
+
+[Service]
+Type=simple
+User={{ run_user }}
+WorkingDirectory={{ workdir }}
+Environment=AGENT_NAME=%i
+ExecStart={{ python_bin }} {{ worker_script }} --agent %i --network {{ network_file }} --agents {{ agents_file }}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

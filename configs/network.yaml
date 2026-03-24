@@ -1,0 +1,9 @@
+rpc_url: "https://mainnet-rpc.axonchain.ai/"
+evm_chain_id: 8210
+cosmos_chain_id: "axon_8210-1"
+gas:
+  max_gwei: 30
+  priority_gwei: 1
+deploy:
+  default_concurrency: 3
+  retry_times: 2

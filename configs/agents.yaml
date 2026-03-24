@@ -1,0 +1,11 @@
+agents:
+  - name: "agent-001"
+    wallet_ref: "AXON_AGENT_001_KEY"
+    heartbeat_interval_sec: 30
+    auto_register: true
+    auto_stake: true
+  - name: "agent-002"
+    wallet_ref: "AXON_AGENT_002_KEY"
+    heartbeat_interval_sec: 30
+    auto_register: true
+    auto_stake: true
