@@ -15,6 +15,42 @@ from urllib import request
 import yaml
 
 REGISTRY_PRECOMPILE = "0x0000000000000000000000000000000000000801"
+DEFAULT_REGISTER_CAPABILITIES = "validation,heartbeat,docker-managed"
+DEFAULT_REGISTER_MODEL = "axon-agent-scale-kit-v1"
+DEFAULT_REGISTER_STAKE_AXON = 100.0
+DEFAULT_REGISTER_WAIT_RECEIPT_SEC = 180
+DEFAULT_REGISTER_BURN_EXPECTED_AXON = 20
+DEFAULT_REGISTER_EVIDENCE_MODE = "register_payable_path_proof"
+REGISTER_METHOD_SIGNATURE = "register(string,string)"
+REGISTER_ABI = [
+    {
+        "inputs": [{"name": "account", "type": "address"}],
+        "name": "isAgent",
+        "outputs": [{"name": "", "type": "bool"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [{"name": "account", "type": "address"}],
+        "name": "getAgent",
+        "outputs": [
+            {"name": "agentId", "type": "string"},
+            {"name": "capabilities", "type": "string[]"},
+            {"name": "model", "type": "string"},
+            {"name": "reputation", "type": "uint64"},
+            {"name": "isOnline", "type": "bool"},
+        ],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [{"name": "capabilities", "type": "string"}, {"name": "model", "type": "string"}],
+        "name": "register",
+        "outputs": [],
+        "stateMutability": "payable",
+        "type": "function",
+    },
+]
 DEFAULT_HEARTBEAT = {
     "interval_blocks": 100,
     "timeout_blocks": 720,
@@ -314,6 +350,237 @@ def _state_wallet_for_agent(state: dict, agent_name: str) -> dict | None:
         if wallet.get("address", "").lower() == address.lower():
             return {"key_id": key_id, **wallet}
     return None
+
+
+def _normalize_private_key(private_key: str) -> str:
+    key = str(private_key or "").strip()
+    if key.startswith("0x"):
+        return key
+    return f"0x{key}"
+
+
+def _axon_to_wei(amount_axon: float) -> int:
+    return int(float(amount_axon) * (10**18))
+
+
+def _registration_intent_payload(address: str, chain_id: int, stake_axon: float, capabilities: str, model: str, calldata_hex: str = "") -> dict:
+    data_hex = str(calldata_hex or "")
+    byte_len = 0
+    if data_hex.startswith("0x"):
+        byte_len = len(data_hex[2:]) // 2
+    elif data_hex:
+        byte_len = len(data_hex) // 2
+    payload = {
+        "from": address,
+        "to": REGISTRY_PRECOMPILE,
+        "chain_id": chain_id,
+        "method": REGISTER_METHOD_SIGNATURE,
+        "value_axon": float(stake_axon),
+        "value_wei": _axon_to_wei(stake_axon),
+        "args": {"capabilities": capabilities, "model": model},
+        "calldata": {
+            "prefix": data_hex[:18] if data_hex else "",
+            "byte_length": byte_len,
+            "summary": "abi-encoded register(capabilities, model)" if data_hex else "calldata not encoded",
+        },
+    }
+    if data_hex:
+        payload["calldata"]["suffix"] = data_hex[-16:]
+    return payload
+
+
+def _post_check_payload(is_agent: bool, agent_info: tuple | None) -> dict:
+    info = agent_info or ("", [], "", 0, False)
+    return {
+        "is_agent": bool(is_agent),
+        "agent_id": str(info[0]) if len(info) > 0 else "",
+        "reputation": int(info[3]) if len(info) > 3 else 0,
+        "is_online": bool(info[4]) if len(info) > 4 else False,
+    }
+
+
+def _register_agent_onchain(
+    network_cfg: dict,
+    wallet: dict,
+    stake_axon: float,
+    wait_receipt_timeout: int,
+    dry_run: bool,
+    capabilities: str,
+    model: str,
+) -> tuple[bool, dict]:
+    rpc_url = str(network_cfg.get("rpc_url", "")).strip()
+    chain_id = int(network_cfg.get("evm_chain_id", 8210))
+    if stake_axon <= 0:
+        return False, {"error": "stake_axon must be > 0"}
+    if not rpc_url:
+        return False, {"error": "rpc_url is required"}
+    try:
+        from eth_account import Account
+    except Exception as e:
+        return False, {"error": f"missing eth-account dependency: {e}"}
+
+    pk = _normalize_private_key(str(wallet.get("private_key", "")))
+    try:
+        acct = Account.from_key(pk)
+    except Exception as e:
+        return False, {"error": f"invalid agent private key: {e}"}
+
+    if dry_run:
+        calldata_hex = ""
+        encode_error = ""
+        try:
+            from web3 import Web3
+
+            w3 = Web3()
+            contract = w3.eth.contract(address=Web3.to_checksum_address(REGISTRY_PRECOMPILE), abi=REGISTER_ABI)
+            calldata_hex = contract.functions.register(capabilities, model)._encode_transaction_data()
+        except Exception as e:
+            encode_error = str(e)
+        registration = {
+            "status": "dry_run",
+            "tx_hash": "",
+            "receipt_status": None,
+            "block_number": None,
+            "from": acct.address,
+            "to": REGISTRY_PRECOMPILE,
+            "value_axon": float(stake_axon),
+            "method": REGISTER_METHOD_SIGNATURE,
+            "burn_expected_axon": DEFAULT_REGISTER_BURN_EXPECTED_AXON,
+            "evidence_mode": DEFAULT_REGISTER_EVIDENCE_MODE,
+            "post_check": _post_check_payload(False, None),
+            "intent": _registration_intent_payload(acct.address, chain_id, stake_axon, capabilities, model, calldata_hex),
+            "updated_at": now_ts(),
+        }
+        if encode_error:
+            registration["intent"]["calldata"]["summary"] = f"calldata unavailable: {encode_error}"
+        return True, {"status": "dry_run", "registration": registration}
+
+    try:
+        from web3 import Web3
+    except Exception as e:
+        return False, {"error": f"missing web3 dependency for register: {e}"}
+
+    w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 20, "proxies": {"http": None, "https": None}}))
+    if not w3.is_connected():
+        return False, {"error": "rpc not connected"}
+    contract = w3.eth.contract(address=Web3.to_checksum_address(REGISTRY_PRECOMPILE), abi=REGISTER_ABI)
+
+    try:
+        already_registered = bool(contract.functions.isAgent(acct.address).call())
+        existing_info = contract.functions.getAgent(acct.address).call() if already_registered else None
+    except Exception as e:
+        return False, {"error": f"onchain pre-check failed: {e}"}
+
+    if already_registered:
+        registration = {
+            "status": "already_registered_onchain",
+            "tx_hash": "",
+            "receipt_status": None,
+            "block_number": None,
+            "from": acct.address,
+            "to": REGISTRY_PRECOMPILE,
+            "value_axon": float(stake_axon),
+            "method": REGISTER_METHOD_SIGNATURE,
+            "burn_expected_axon": DEFAULT_REGISTER_BURN_EXPECTED_AXON,
+            "evidence_mode": DEFAULT_REGISTER_EVIDENCE_MODE,
+            "post_check": _post_check_payload(True, existing_info),
+            "updated_at": now_ts(),
+        }
+        return True, {"status": "already_registered_onchain", "registration": registration}
+
+    stake_wei = _axon_to_wei(stake_axon)
+    try:
+        nonce = w3.eth.get_transaction_count(acct.address, "pending")
+        gas_price = w3.eth.gas_price
+        try:
+            estimated = contract.functions.register(capabilities, model).estimate_gas({"from": acct.address, "value": stake_wei})
+            gas_limit = max(int(estimated * 1.2), 250000)
+        except Exception:
+            gas_limit = 1_000_000
+        tx = contract.functions.register(capabilities, model).build_transaction(
+            {
+                "from": acct.address,
+                "nonce": nonce,
+                "gas": gas_limit,
+                "gasPrice": gas_price,
+                "chainId": chain_id,
+                "value": stake_wei,
+            }
+        )
+        tx_hash = ""
+        signed = acct.sign_transaction(tx)
+        tx_hash_bytes = w3.eth.send_raw_transaction(signed.raw_transaction)
+        tx_hash = tx_hash_bytes.hex()
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash_bytes, timeout=int(wait_receipt_timeout))
+        receipt_status = int(receipt.status)
+        block_number = int(receipt.blockNumber)
+        if receipt_status != 1:
+            registration = {
+                "status": "failed",
+                "tx_hash": tx_hash,
+                "receipt_status": receipt_status,
+                "block_number": block_number,
+                "from": acct.address,
+                "to": REGISTRY_PRECOMPILE,
+                "value_axon": float(stake_axon),
+                "method": REGISTER_METHOD_SIGNATURE,
+                "burn_expected_axon": DEFAULT_REGISTER_BURN_EXPECTED_AXON,
+                "evidence_mode": DEFAULT_REGISTER_EVIDENCE_MODE,
+                "post_check": _post_check_payload(False, None),
+                "updated_at": now_ts(),
+            }
+            return False, {"error": "register tx receipt status != 1", "registration": registration}
+    except Exception as e:
+        return False, {"error": f"register transaction failed: {e}"}
+
+    try:
+        is_agent = bool(contract.functions.isAgent(acct.address).call())
+        info = contract.functions.getAgent(acct.address).call() if is_agent else None
+    except Exception as e:
+        return False, {"error": f"onchain post-check failed: {e}"}
+
+    registration = {
+        "status": "registered_onchain" if is_agent else "post_check_failed",
+        "tx_hash": tx_hash,
+        "receipt_status": receipt_status,
+        "block_number": block_number,
+        "from": acct.address,
+        "to": REGISTRY_PRECOMPILE,
+        "value_axon": float(stake_axon),
+        "method": REGISTER_METHOD_SIGNATURE,
+        "burn_expected_axon": DEFAULT_REGISTER_BURN_EXPECTED_AXON,
+        "evidence_mode": DEFAULT_REGISTER_EVIDENCE_MODE,
+        "post_check": _post_check_payload(is_agent, info),
+        "updated_at": now_ts(),
+    }
+    if not is_agent:
+        return False, {"error": "register tx succeeded but isAgent=false in post-check", "registration": registration}
+    return True, {"status": "registered_onchain", "registration": registration}
+
+
+def _apply_registration_to_state(state: dict, agent_name: str, wallet_address: str, result: dict, request_id: str | None = None) -> None:
+    item = state.setdefault("agents", {}).setdefault(agent_name, {})
+    item["wallet_address"] = wallet_address
+    registration = result.get("registration", {})
+    item["registration"] = registration
+    post = registration.get("post_check", {})
+    is_agent = bool(post.get("is_agent"))
+    item["registered"] = is_agent
+    item["staked"] = is_agent
+    if is_agent:
+        item["last_error"] = ""
+    elif result.get("error"):
+        item["last_error"] = result["error"]
+    state.setdefault("events", []).append(
+        {
+            "ts": now_ts(),
+            "type": "register_onchain",
+            "agent": agent_name,
+            "request_id": request_id,
+            "status": registration.get("status", result.get("status", "unknown")),
+            "tx_hash": registration.get("tx_hash", ""),
+        }
+    )
 
 
 def _submit_heartbeat_tx(rpc_url: str, chain_id: int, private_key: str, max_retries: int, backoff_seconds: int, receipt_timeout_sec: int) -> tuple[bool, dict]:
@@ -1296,6 +1563,143 @@ def _ensure_agent_wallet(state_file: str, agent_name: str) -> dict:
     return {"key_id": key_id, "address": acct.address, "private_key": acct.key.hex()}
 
 
+def register_onchain_once(
+    state_file: str,
+    network: str,
+    agent: str,
+    stake_axon: float,
+    wait_receipt_timeout: int,
+    dry_run: bool,
+    capabilities: str,
+    model: str,
+) -> int:
+    state = load_state(state_file)
+    wallet = _state_wallet_for_agent(state, agent)
+    if not wallet:
+        print(json.dumps({"ok": False, "error": f"wallet not found for {agent}"}, ensure_ascii=False, indent=2))
+        return 1
+    network_cfg = load_yaml(network)
+    ok, result = _register_agent_onchain(
+        network_cfg=network_cfg,
+        wallet=wallet,
+        stake_axon=stake_axon,
+        wait_receipt_timeout=wait_receipt_timeout,
+        dry_run=dry_run,
+        capabilities=capabilities,
+        model=model,
+    )
+    status = result.get("status", "failed")
+    payload = {"ok": ok, "agent": agent, "dry_run": bool(dry_run), "status": status, **result}
+    if dry_run:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0 if ok else 1
+    _apply_registration_to_state(state, agent, wallet.get("address", ""), result)
+    save_state(state_file, state)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0 if ok else 1
+
+
+def register_onchain_batch(
+    state_file: str,
+    network: str,
+    request_id: str | None,
+    stake_axon: float,
+    wait_receipt_timeout: int,
+    dry_run: bool,
+    capabilities: str,
+    model: str,
+) -> int:
+    state = load_state(state_file)
+    targets = []
+    if request_id:
+        req = state.get("requests", {}).get(request_id)
+        if not req:
+            print(json.dumps({"ok": False, "error": "request not found"}, ensure_ascii=False, indent=2))
+            return 1
+        targets = req.get("scale_plan", {}).get("agents", [])
+    else:
+        targets = sorted(state.get("agents", {}).keys())
+    if not targets:
+        print(json.dumps({"ok": False, "error": "no agents for register-onchain-batch"}, ensure_ascii=False, indent=2))
+        return 1
+
+    network_cfg = load_yaml(network)
+    registered = []
+    skipped = []
+    failed = []
+    details = []
+    req = state.get("requests", {}).get(request_id) if request_id else None
+    for name in targets:
+        wallet = _state_wallet_for_agent(state, name)
+        if not wallet:
+            failed.append(name)
+            details.append({"agent": name, "ok": False, "error": "wallet not found"})
+            if req and not dry_run:
+                req.setdefault("execution", {}).setdefault("failed_agents", {})[name] = {"error": "wallet not found", "retryable": False}
+            continue
+        ok, result = _register_agent_onchain(
+            network_cfg=network_cfg,
+            wallet=wallet,
+            stake_axon=stake_axon,
+            wait_receipt_timeout=wait_receipt_timeout,
+            dry_run=dry_run,
+            capabilities=capabilities,
+            model=model,
+        )
+        details.append({"agent": name, "ok": ok, **result})
+        if ok and result.get("status") == "already_registered_onchain":
+            skipped.append(name)
+        elif ok:
+            registered.append(name)
+        else:
+            failed.append(name)
+
+        if dry_run:
+            continue
+        _apply_registration_to_state(state, name, wallet.get("address", ""), result, request_id=request_id)
+        if req:
+            execution = req.setdefault("execution", {})
+            completed_agents = set(execution.setdefault("completed_agents", []))
+            failed_agents = execution.setdefault("failed_agents", {})
+            if ok:
+                completed_agents.add(name)
+                failed_agents.pop(name, None)
+            else:
+                failed_agents[name] = {
+                    "error": result.get("error", "register-onchain failed"),
+                    "retryable": True,
+                    "status": result.get("registration", {}).get("status", "failed"),
+                }
+            execution["completed_agents"] = sorted(completed_agents)
+
+    if req and not dry_run:
+        req["status"] = "PARTIAL" if req.get("execution", {}).get("failed_agents") else "SCALED"
+        req["updated_at"] = now_ts()
+    if not dry_run:
+        save_state(state_file, state)
+    ok = len(failed) == 0
+    print(
+        json.dumps(
+            {
+                "ok": ok,
+                "request_id": request_id,
+                "dry_run": bool(dry_run),
+                "target_count": len(targets),
+                "registered_count": len(registered),
+                "already_registered_count": len(skipped),
+                "failed_count": len(failed),
+                "registered": registered,
+                "already_registered": skipped,
+                "failed": failed,
+                "details": details,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0 if ok else 1
+
+
 def execute_scale(state_file: str, network: str, agents: str, request_id: str, fail_agents: list[str]) -> int:
     state = load_state(state_file)
     req = state["requests"].get(request_id)
@@ -1308,14 +1712,31 @@ def execute_scale(state_file: str, network: str, agents: str, request_id: str, f
     target_names = req.get("scale_plan", {}).get("agents", [])
     completed = set(req["execution"].get("completed_agents", []))
     failed = dict(req["execution"].get("failed_agents", {}))
+    network_cfg = load_yaml(network)
+    stake_axon = float(req.get("stake_per_agent_axon", DEFAULT_REGISTER_STAKE_AXON))
     for name in target_names:
         if name in completed:
             continue
         wallet_info = _ensure_agent_wallet(state_file, name)
+        state["wallets"] = load_state(state_file).get("wallets", state.get("wallets", {}))
         if name in fail_agents:
             failed[name] = {"error": "simulated execution failure", "retryable": True}
             continue
-        state["agents"][name] = {"registered": True, "staked": True, "service_active": True, "heartbeat_at": now_ts(), "wallet_address": wallet_info["address"], "last_error": ""}
+        ok, result = _register_agent_onchain(
+            network_cfg=network_cfg,
+            wallet=wallet_info,
+            stake_axon=stake_axon,
+            wait_receipt_timeout=DEFAULT_REGISTER_WAIT_RECEIPT_SEC,
+            dry_run=False,
+            capabilities=DEFAULT_REGISTER_CAPABILITIES,
+            model=DEFAULT_REGISTER_MODEL,
+        )
+        _apply_registration_to_state(state, name, wallet_info.get("address", ""), result, request_id=request_id)
+        if not ok:
+            failed[name] = {"error": result.get("error", "register-onchain failed"), "retryable": True}
+            continue
+        state["agents"][name]["service_active"] = True
+        state["agents"][name]["heartbeat_at"] = now_ts()
         completed.add(name)
         failed.pop(name, None)
     req["execution"]["completed_agents"] = sorted(completed)
@@ -1617,22 +2038,26 @@ def repair(state_file: str, request_id: str) -> int:
         return 1
     repaired = []
     skipped = []
+    blocked = []
     for name in req.get("scale_plan", {}).get("agents", []):
         item = state["agents"].get(name, {})
         if item.get("registered") and item.get("staked") and item.get("service_active"):
             skipped.append(name)
             continue
-        item["registered"] = True
-        item["staked"] = True
+        if not (item.get("registered") and item.get("staked")):
+            blocked.append({"agent": name, "reason": "onchain_registration_required"})
+            continue
         item["service_active"] = bool(item.get("container_name")) or True
         item["heartbeat_at"] = now_ts()
         state["agents"][name] = item
         repaired.append(name)
         req["execution"].get("failed_agents", {}).pop(name, None)
+    for item in blocked:
+        req["execution"].setdefault("failed_agents", {})[item["agent"]] = {"error": item["reason"], "retryable": True}
     req["status"] = "SCALED" if not req["execution"].get("failed_agents") else "PARTIAL"
-    state["events"].append({"ts": now_ts(), "type": "repair_run", "request_id": request_id, "repaired": repaired})
+    state["events"].append({"ts": now_ts(), "type": "repair_run", "request_id": request_id, "repaired": repaired, "blocked": blocked})
     save_state(state_file, state)
-    print(json.dumps({"ok": True, "request_id": request_id, "repaired": repaired, "skipped": skipped, "status": req["status"]}, ensure_ascii=False, indent=2))
+    print(json.dumps({"ok": len(blocked) == 0, "request_id": request_id, "repaired": repaired, "skipped": skipped, "blocked": blocked, "status": req["status"]}, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -1843,6 +2268,26 @@ def main() -> int:
     p_scale.add_argument("--request-id", required=True)
     p_scale.add_argument("--fail-agent", action="append", default=[])
 
+    p_register_onchain_once = sub.add_parser("register-onchain-once")
+    p_register_onchain_once.add_argument("--state-file", default="state/deploy_state.json")
+    p_register_onchain_once.add_argument("--network", required=True)
+    p_register_onchain_once.add_argument("--agent", required=True)
+    p_register_onchain_once.add_argument("--stake-axon", type=float, default=DEFAULT_REGISTER_STAKE_AXON)
+    p_register_onchain_once.add_argument("--wait-receipt-timeout", type=int, default=DEFAULT_REGISTER_WAIT_RECEIPT_SEC)
+    p_register_onchain_once.add_argument("--capabilities", default=DEFAULT_REGISTER_CAPABILITIES)
+    p_register_onchain_once.add_argument("--model", default=DEFAULT_REGISTER_MODEL)
+    p_register_onchain_once.add_argument("--dry-run", action="store_true")
+
+    p_register_onchain_batch = sub.add_parser("register-onchain-batch")
+    p_register_onchain_batch.add_argument("--state-file", default="state/deploy_state.json")
+    p_register_onchain_batch.add_argument("--network", required=True)
+    p_register_onchain_batch.add_argument("--request-id")
+    p_register_onchain_batch.add_argument("--stake-axon", type=float, default=DEFAULT_REGISTER_STAKE_AXON)
+    p_register_onchain_batch.add_argument("--wait-receipt-timeout", type=int, default=DEFAULT_REGISTER_WAIT_RECEIPT_SEC)
+    p_register_onchain_batch.add_argument("--capabilities", default=DEFAULT_REGISTER_CAPABILITIES)
+    p_register_onchain_batch.add_argument("--model", default=DEFAULT_REGISTER_MODEL)
+    p_register_onchain_batch.add_argument("--dry-run", action="store_true")
+
     p_status = sub.add_parser("status")
     p_status.add_argument("--state-file", default="state/deploy_state.json")
     p_status.add_argument("--request-id", required=True)
@@ -1967,6 +2412,28 @@ def main() -> int:
         return build_scale_plan(args.state_file, args.network, args.agents, args.request_id)
     if args.cmd == "scale":
         return execute_scale(args.state_file, args.network, args.agents, args.request_id, args.fail_agent)
+    if args.cmd == "register-onchain-once":
+        return register_onchain_once(
+            state_file=args.state_file,
+            network=args.network,
+            agent=args.agent,
+            stake_axon=args.stake_axon,
+            wait_receipt_timeout=args.wait_receipt_timeout,
+            dry_run=args.dry_run,
+            capabilities=args.capabilities,
+            model=args.model,
+        )
+    if args.cmd == "register-onchain-batch":
+        return register_onchain_batch(
+            state_file=args.state_file,
+            network=args.network,
+            request_id=args.request_id,
+            stake_axon=args.stake_axon,
+            wait_receipt_timeout=args.wait_receipt_timeout,
+            dry_run=args.dry_run,
+            capabilities=args.capabilities,
+            model=args.model,
+        )
     if args.cmd == "status":
         return status(args.state_file, args.request_id)
     if args.cmd == "repair":

@@ -53,6 +53,45 @@ python scripts/axonctl.py lifecycle-report --network configs/network.yaml --requ
 - Execute idempotent scaling, status reports and repair actions
 - Generate, list, export and backup all wallet keys (funding + agent wallets)
 
+## On-Chain Register (payable)
+
+Registration must go through `IAgentRegistry.register(string,string)` at
+`0x0000000000000000000000000000000000000801` with `msg.value` stake.
+
+`scale` now uses on-chain register and only marks `registered/staked=true` after
+successful on-chain post-check (`isAgent/getAgent`).
+
+```bash
+# dry-run intent only (no state mutation, no on-chain tx)
+python scripts/axonctl.py register-onchain-once \
+  --state-file state/deploy_state.json \
+  --network configs/network.yaml \
+  --agent agent-001 \
+  --stake-axon 100 \
+  --dry-run
+
+# real register for one agent
+python scripts/axonctl.py register-onchain-once \
+  --state-file state/deploy_state.json \
+  --network configs/network.yaml \
+  --agent agent-001 \
+  --stake-axon 100
+
+# batch register from request plan
+python scripts/axonctl.py register-onchain-batch \
+  --state-file state/deploy_state.json \
+  --network configs/network.yaml \
+  --request-id <request_id> \
+  --stake-axon 100
+```
+
+Registration evidence is persisted under each agent in `state/deploy_state.json`
+as `registration.*`:
+- `tx_hash/receipt_status/block_number/from/to/value_axon/method`
+- `post_check.is_agent/agent_id/reputation/is_online`
+- `burn_expected_axon=20`
+- `evidence_mode=register_payable_path_proof`
+
 ## Step 0 Initialization
 
 ```bash

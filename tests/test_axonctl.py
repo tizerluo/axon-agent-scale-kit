@@ -164,6 +164,28 @@ class AxonCtlRegressionTests(unittest.TestCase):
 
     @mock.patch("axonctl.rpc_chain_id", return_value=(True, 8210, None))
     @mock.patch(
+        "axonctl._register_agent_onchain",
+        return_value=(
+            True,
+            {
+                "status": "registered_onchain",
+                "registration": {
+                    "status": "registered_onchain",
+                    "tx_hash": "0x123",
+                    "receipt_status": 1,
+                    "block_number": 100,
+                    "from": "0x2222222222222222222222222222222222222222",
+                    "to": axonctl.REGISTRY_PRECOMPILE,
+                    "value_axon": 100.0,
+                    "method": axonctl.REGISTER_METHOD_SIGNATURE,
+                    "burn_expected_axon": 20,
+                    "evidence_mode": "register_payable_path_proof",
+                    "post_check": {"is_agent": True, "agent_id": "agent-x", "reputation": 10, "is_online": True},
+                },
+            },
+        ),
+    )
+    @mock.patch(
         "axonctl._ensure_agent_wallet",
         return_value={
             "key_id": "testkey",
@@ -171,7 +193,7 @@ class AxonCtlRegressionTests(unittest.TestCase):
             "private_key": "0x" + "a" * 64,
         },
     )
-    def test_funded_plan_scale_repair_status_flow(self, _wallet_mock: mock.Mock, _rpc_mock: mock.Mock) -> None:
+    def test_funded_plan_scale_repair_status_flow(self, _wallet_mock: mock.Mock, _register_mock: mock.Mock, _rpc_mock: mock.Mock) -> None:
         self.assertEqual(
             axonctl.create_request(
                 state_file=str(self.state_file),
@@ -205,6 +227,28 @@ class AxonCtlRegressionTests(unittest.TestCase):
 
     @mock.patch("axonctl.rpc_chain_id", return_value=(True, 8210, None))
     @mock.patch(
+        "axonctl._register_agent_onchain",
+        return_value=(
+            True,
+            {
+                "status": "registered_onchain",
+                "registration": {
+                    "status": "registered_onchain",
+                    "tx_hash": "0xabc1",
+                    "receipt_status": 1,
+                    "block_number": 101,
+                    "from": "0x2222222222222222222222222222222222222222",
+                    "to": axonctl.REGISTRY_PRECOMPILE,
+                    "value_axon": 100.0,
+                    "method": axonctl.REGISTER_METHOD_SIGNATURE,
+                    "burn_expected_axon": 20,
+                    "evidence_mode": "register_payable_path_proof",
+                    "post_check": {"is_agent": True, "agent_id": "agent-y", "reputation": 10, "is_online": True},
+                },
+            },
+        ),
+    )
+    @mock.patch(
         "axonctl._ensure_agent_wallet",
         return_value={
             "key_id": "testkey",
@@ -212,7 +256,7 @@ class AxonCtlRegressionTests(unittest.TestCase):
             "private_key": "0x" + "a" * 64,
         },
     )
-    def test_run_intent_pipeline_success(self, _wallet_mock: mock.Mock, _rpc_mock: mock.Mock) -> None:
+    def test_run_intent_pipeline_success(self, _wallet_mock: mock.Mock, _register_mock: mock.Mock, _rpc_mock: mock.Mock) -> None:
         self.assertEqual(axonctl.funding_wallet_set(str(self.state_file), self.valid_address), 0)
         code = axonctl.run_intent_pipeline(
             state_file=str(self.state_file),
@@ -228,6 +272,28 @@ class AxonCtlRegressionTests(unittest.TestCase):
 
     @mock.patch("axonctl.rpc_chain_id", return_value=(True, 8210, None))
     @mock.patch(
+        "axonctl._register_agent_onchain",
+        return_value=(
+            True,
+            {
+                "status": "registered_onchain",
+                "registration": {
+                    "status": "registered_onchain",
+                    "tx_hash": "0xabc2",
+                    "receipt_status": 1,
+                    "block_number": 102,
+                    "from": "0x2222222222222222222222222222222222222222",
+                    "to": axonctl.REGISTRY_PRECOMPILE,
+                    "value_axon": 100.0,
+                    "method": axonctl.REGISTER_METHOD_SIGNATURE,
+                    "burn_expected_axon": 20,
+                    "evidence_mode": "register_payable_path_proof",
+                    "post_check": {"is_agent": True, "agent_id": "agent-z", "reputation": 10, "is_online": True},
+                },
+            },
+        ),
+    )
+    @mock.patch(
         "axonctl._ensure_agent_wallet",
         return_value={
             "key_id": "testkey",
@@ -237,7 +303,14 @@ class AxonCtlRegressionTests(unittest.TestCase):
     )
     @mock.patch("axonctl.scp_to", return_value=(True, "", ""))
     @mock.patch("axonctl.run_ssh")
-    def test_remote_deploy_and_remote_status(self, ssh_mock: mock.Mock, _scp_mock: mock.Mock, _wallet_mock: mock.Mock, _rpc_mock: mock.Mock) -> None:
+    def test_remote_deploy_and_remote_status(
+        self,
+        ssh_mock: mock.Mock,
+        _scp_mock: mock.Mock,
+        _wallet_mock: mock.Mock,
+        _register_mock: mock.Mock,
+        _rpc_mock: mock.Mock,
+    ) -> None:
         self.assertEqual(
             axonctl.create_request(
                 state_file=str(self.state_file),
@@ -311,6 +384,255 @@ class AxonCtlRegressionTests(unittest.TestCase):
             ),
             1,
         )
+
+    @mock.patch(
+        "axonctl._register_agent_onchain",
+        return_value=(
+            True,
+            {
+                "status": "dry_run",
+                "registration": {
+                    "status": "dry_run",
+                    "tx_hash": "",
+                    "receipt_status": None,
+                    "block_number": None,
+                    "from": "0x2222222222222222222222222222222222222222",
+                    "to": axonctl.REGISTRY_PRECOMPILE,
+                    "value_axon": 100.0,
+                    "method": axonctl.REGISTER_METHOD_SIGNATURE,
+                    "burn_expected_axon": 20,
+                    "evidence_mode": "register_payable_path_proof",
+                    "post_check": {"is_agent": False, "agent_id": "", "reputation": 0, "is_online": False},
+                },
+            },
+        ),
+    )
+    def test_register_onchain_once_dry_run_does_not_write_state(self, _register_mock: mock.Mock) -> None:
+        state = axonctl.load_state(str(self.state_file))
+        state["agents"]["agent-001"] = {"wallet_address": "0x2222222222222222222222222222222222222222"}
+        state["wallets"]["a1"] = {
+            "address": "0x2222222222222222222222222222222222222222",
+            "private_key": "a" * 64,
+            "role": "agent",
+            "label": "agent:agent-001",
+        }
+        axonctl.save_state(str(self.state_file), state)
+        before = axonctl.load_state(str(self.state_file))
+        self.assertEqual(
+            axonctl.register_onchain_once(
+                state_file=str(self.state_file),
+                network=str(self.network_file),
+                agent="agent-001",
+                stake_axon=100.0,
+                wait_receipt_timeout=180,
+                dry_run=True,
+                capabilities=axonctl.DEFAULT_REGISTER_CAPABILITIES,
+                model=axonctl.DEFAULT_REGISTER_MODEL,
+            ),
+            0,
+        )
+        after = axonctl.load_state(str(self.state_file))
+        self.assertEqual(before, after)
+
+    @mock.patch(
+        "axonctl._register_agent_onchain",
+        return_value=(
+            True,
+            {
+                "status": "registered_onchain",
+                "registration": {
+                    "status": "registered_onchain",
+                    "tx_hash": "0xbbb",
+                    "receipt_status": 1,
+                    "block_number": 1888,
+                    "from": "0x2222222222222222222222222222222222222222",
+                    "to": axonctl.REGISTRY_PRECOMPILE,
+                    "value_axon": 100.0,
+                    "method": axonctl.REGISTER_METHOD_SIGNATURE,
+                    "burn_expected_axon": 20,
+                    "evidence_mode": "register_payable_path_proof",
+                    "post_check": {"is_agent": True, "agent_id": "agent-proof", "reputation": 10, "is_online": True},
+                },
+            },
+        ),
+    )
+    def test_register_onchain_once_updates_state(self, _register_mock: mock.Mock) -> None:
+        state = axonctl.load_state(str(self.state_file))
+        state["agents"]["agent-001"] = {"wallet_address": "0x2222222222222222222222222222222222222222"}
+        state["wallets"]["a1"] = {
+            "address": "0x2222222222222222222222222222222222222222",
+            "private_key": "a" * 64,
+            "role": "agent",
+            "label": "agent:agent-001",
+        }
+        axonctl.save_state(str(self.state_file), state)
+        self.assertEqual(
+            axonctl.register_onchain_once(
+                state_file=str(self.state_file),
+                network=str(self.network_file),
+                agent="agent-001",
+                stake_axon=100.0,
+                wait_receipt_timeout=180,
+                dry_run=False,
+                capabilities=axonctl.DEFAULT_REGISTER_CAPABILITIES,
+                model=axonctl.DEFAULT_REGISTER_MODEL,
+            ),
+            0,
+        )
+        after = axonctl.load_state(str(self.state_file))
+        self.assertTrue(after["agents"]["agent-001"]["registered"])
+        self.assertTrue(after["agents"]["agent-001"]["staked"])
+        self.assertEqual(after["agents"]["agent-001"]["registration"]["tx_hash"], "0xbbb")
+
+    @mock.patch("axonctl._register_agent_onchain")
+    def test_register_onchain_batch_updates_request_failed_agents(self, register_mock: mock.Mock) -> None:
+        register_mock.side_effect = [
+            (
+                True,
+                {
+                    "status": "registered_onchain",
+                    "registration": {
+                        "status": "registered_onchain",
+                        "tx_hash": "0x111",
+                        "receipt_status": 1,
+                        "block_number": 10,
+                        "from": "0x2222222222222222222222222222222222222222",
+                        "to": axonctl.REGISTRY_PRECOMPILE,
+                        "value_axon": 100.0,
+                        "method": axonctl.REGISTER_METHOD_SIGNATURE,
+                        "burn_expected_axon": 20,
+                        "evidence_mode": "register_payable_path_proof",
+                        "post_check": {"is_agent": True, "agent_id": "agent-a", "reputation": 10, "is_online": True},
+                    },
+                },
+            ),
+            (
+                False,
+                {
+                    "error": "insufficient funds",
+                    "status": "failed",
+                    "registration": {
+                        "status": "failed",
+                        "tx_hash": "",
+                        "receipt_status": None,
+                        "block_number": None,
+                        "from": "0x3333333333333333333333333333333333333333",
+                        "to": axonctl.REGISTRY_PRECOMPILE,
+                        "value_axon": 100.0,
+                        "method": axonctl.REGISTER_METHOD_SIGNATURE,
+                        "burn_expected_axon": 20,
+                        "evidence_mode": "register_payable_path_proof",
+                        "post_check": {"is_agent": False, "agent_id": "", "reputation": 0, "is_online": False},
+                    },
+                },
+            ),
+        ]
+        state = axonctl.load_state(str(self.state_file))
+        state["requests"]["r1"] = {
+            "request_id": "r1",
+            "status": "PLANNED",
+            "scale_plan": {"agents": ["agent-001", "agent-002"]},
+            "execution": {"completed_agents": [], "failed_agents": {}, "attempts": {}},
+            "updated_at": 0,
+        }
+        state["agents"]["agent-001"] = {"wallet_address": "0x2222222222222222222222222222222222222222"}
+        state["agents"]["agent-002"] = {"wallet_address": "0x3333333333333333333333333333333333333333"}
+        state["wallets"]["a1"] = {
+            "address": "0x2222222222222222222222222222222222222222",
+            "private_key": "a" * 64,
+            "role": "agent",
+            "label": "agent:agent-001",
+        }
+        state["wallets"]["a2"] = {
+            "address": "0x3333333333333333333333333333333333333333",
+            "private_key": "b" * 64,
+            "role": "agent",
+            "label": "agent:agent-002",
+        }
+        axonctl.save_state(str(self.state_file), state)
+        self.assertEqual(
+            axonctl.register_onchain_batch(
+                state_file=str(self.state_file),
+                network=str(self.network_file),
+                request_id="r1",
+                stake_axon=100.0,
+                wait_receipt_timeout=180,
+                dry_run=False,
+                capabilities=axonctl.DEFAULT_REGISTER_CAPABILITIES,
+                model=axonctl.DEFAULT_REGISTER_MODEL,
+            ),
+            1,
+        )
+        after = axonctl.load_state(str(self.state_file))
+        req = after["requests"]["r1"]["execution"]
+        self.assertIn("agent-001", req["completed_agents"])
+        self.assertIn("agent-002", req["failed_agents"])
+
+    @mock.patch("axonctl.rpc_chain_id", return_value=(True, 8210, None))
+    @mock.patch(
+        "axonctl._register_agent_onchain",
+        return_value=(
+            False,
+            {
+                "error": "insufficient funds",
+                "status": "failed",
+                "registration": {
+                    "status": "failed",
+                    "tx_hash": "",
+                    "receipt_status": None,
+                    "block_number": None,
+                    "from": "0x2222222222222222222222222222222222222222",
+                    "to": axonctl.REGISTRY_PRECOMPILE,
+                    "value_axon": 100.0,
+                    "method": axonctl.REGISTER_METHOD_SIGNATURE,
+                    "burn_expected_axon": 20,
+                    "evidence_mode": "register_payable_path_proof",
+                    "post_check": {"is_agent": False, "agent_id": "", "reputation": 0, "is_online": False},
+                },
+            },
+        ),
+    )
+    @mock.patch(
+        "axonctl._ensure_agent_wallet",
+        return_value={
+            "key_id": "testkey",
+            "address": "0x2222222222222222222222222222222222222222",
+            "private_key": "0x" + "a" * 64,
+        },
+    )
+    def test_execute_scale_register_failure_does_not_fake_registered(
+        self, _wallet_mock: mock.Mock, _register_mock: mock.Mock, _rpc_mock: mock.Mock
+    ) -> None:
+        self.assertEqual(
+            axonctl.create_request(
+                state_file=str(self.state_file),
+                target_agents=1,
+                min_funding_axon=150.0,
+                funding_address=self.valid_address,
+                min_confirmations=2,
+                timeout_sec=600,
+                stake_per_agent_axon=100.0,
+            ),
+            0,
+        )
+        request_id = next(iter(axonctl.load_state(str(self.state_file))["requests"]))
+        self.assertEqual(
+            axonctl.fund_check(
+                state_file=str(self.state_file),
+                network=str(self.network_file),
+                request_id=request_id,
+                observed_amount_axon=150.0,
+                observed_confirmations=3,
+                observed_chain_id=8210,
+                strict_rpc=True,
+            ),
+            0,
+        )
+        self.assertEqual(axonctl.build_scale_plan(str(self.state_file), str(self.network_file), str(self.agents_file), request_id), 0)
+        self.assertEqual(axonctl.execute_scale(str(self.state_file), str(self.network_file), str(self.agents_file), request_id, []), 0)
+        after = axonctl.load_state(str(self.state_file))
+        self.assertIn("agent-001", after["requests"][request_id]["execution"]["failed_agents"])
+        self.assertFalse(after["agents"]["agent-001"]["registered"])
 
     def test_wallet_generate_and_list_and_export(self) -> None:
         self.assertEqual(axonctl.wallet_generate(str(self.state_file), role="funding", label="test-funding"), 0)
