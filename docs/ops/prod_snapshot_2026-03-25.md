@@ -79,3 +79,23 @@ ssh -i /Users/mac-mini/AXON-Chain/server/config/QQClaw.pem ubuntu@43.165.195.71 
 - 生产守护正常在线；
 - 当前纳管 8 个 agent 全健康；
 - 可作为本周后续变更的回归基线。
+
+## 4. 收口执行记录（2026-03-25）
+
+- 提交信息：
+  - commit: `64c6e438ef7e77e05134626be46b3c15f766268d` (`64c6e43`)
+  - message: `chore: finalize handover closure with release automation and CI baseline`
+- CI 结果：
+  - workflow: `unittest`
+  - run: `https://github.com/6tizer/axon-agent-scale-kit/actions/runs/23536993812`
+  - status: `completed/success`
+  - completed_at: `2026-03-25T10:44:03Z`
+- 真实发布演练（非 dry-run）：
+  - execute_time: `2026-03-25 18:46:19 CST`
+  - script: `scripts/release_deploy_verify.sh`
+  - result: `success`
+- 发布后验收：
+  - `systemctl is-active axon-heartbeat-daemon.service` => `active`
+  - agent container count (`docker ps` with prefix `axon-agent-agent-`) => `8`
+  - lifecycle summary => `HEALTHY=8, DEGRADED=0, FAILED=0`
+  - lifecycle block => `137573`
