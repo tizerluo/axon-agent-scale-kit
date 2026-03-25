@@ -23,8 +23,7 @@ python scripts/axonctl.py init-step --mode server --hosts configs/hosts.yaml --h
 ## Wallet Management
 
 All wallets (funding address + per-agent wallets) are generated locally with
-real keys. Private keys and mnemonics are shown ONCE at generation time and
-cannot be recovered. You MUST back them up immediately.
+real keys. Default CLI output is masked for private key and mnemonic.
 
 ### Funding wallet (receives AXON transfers)
 ```bash
@@ -50,9 +49,11 @@ python scripts/axonctl.py funding-wallet-get
 ```bash
 python scripts/axonctl.py wallet-list
 python scripts/axonctl.py wallet-export --key-id <key_id>
+python scripts/axonctl.py wallet-export --key-id <key_id> --reveal-secret
+python scripts/axonctl.py wallet-backup-export --output-file backups/wallets.secure.json
+python scripts/axonctl.py wallet-backup-verify --backup-file backups/wallets.secure.json
 ```
-**Backup all agent wallets after each scale run.** Private keys are stored in
-the state file but can be exported on demand.
+**Backup all agent wallets after each scale run.** Keep backup file offline and encrypted.
 
 ## Quick Start
 
@@ -95,6 +96,15 @@ python scripts/axonctl.py remote-status \
 # 6. export and backup all agent wallet keys
 python scripts/axonctl.py wallet-list
 python scripts/axonctl.py wallet-export --key-id <key_id>
+python scripts/axonctl.py wallet-backup-export --output-file backups/wallets.secure.json
+python scripts/axonctl.py wallet-backup-verify --backup-file backups/wallets.secure.json
+
+# 7. challenge and lifecycle management
+python scripts/axonctl.py challenge-gate-check --network configs/network.yaml --agent agent-001
+python scripts/axonctl.py challenge-run-once --network configs/network.yaml --agent agent-001
+python scripts/axonctl.py challenge-batch --network configs/network.yaml --request-id <request_id>
+python scripts/axonctl.py lifecycle-report --network configs/network.yaml --request-id <request_id>
+python scripts/axonctl.py lifecycle-repair --network configs/network.yaml --request-id <request_id>
 ```
 
 ## Remote Host Config

@@ -1,5 +1,6 @@
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
@@ -11,6 +12,26 @@ from pathlib import Path
 from urllib import request
 
 import yaml
+
+REGISTRY_PRECOMPILE = "0x0000000000000000000000000000000000000801"
+DEFAULT_HEARTBEAT = {
+    "interval_blocks": 100,
+    "timeout_blocks": 720,
+    "prewarn_blocks": 120,
+    "max_retries": 3,
+    "backoff_seconds": 2,
+    "receipt_timeout_sec": 120,
+}
+DEFAULT_CHALLENGE = {
+    "enabled": True,
+    "validator_required": True,
+    "non_llm_first": True,
+    "ai_challenge_window_blocks": 50,
+    "bank_source_url": "https://raw.githubusercontent.com/axon-chain/axon/main/x/agent/keeper/challenge.go",
+    "answer_bank_file": "configs/challenge_answers.yaml",
+    "execution_mode": "simulate",
+    "openrouter": {"api_base": "https://openrouter.ai/api/v1/chat/completions", "model_id": "", "fallback_models": []},
+}
 
 
 def now_ts() -> int:
@@ -56,6 +77,109 @@ def rpc_chain_id(rpc_url: str, timeout_sec: int = 5) -> tuple[bool, int | None, 
         return False, None, str(e)
 
 
+def heartbeat_settings(network_cfg: dict) -> dict:
+    hb = dict(DEFAULT_HEARTBEAT)
+    user_hb = network_cfg.get("heartbeat", {})
+    if isinstance(user_hb, dict):
+        hb.update({k: v for k, v in user_hb.items() if v is not None})
+    return hb
+
+
+def validate_heartbeat_settings(hb: dict) -> list[str]:
+    errors = []
+    interval = int(hb.get("interval_blocks", 0))
+    timeout = int(hb.get("timeout_blocks", 0))
+    prewarn = int(hb.get("prewarn_blocks", 0))
+    retries = int(hb.get("max_retries", 0))
+    backoff = int(hb.get("backoff_seconds", 0))
+    receipt_timeout = int(hb.get("receipt_timeout_sec", 0))
+    if interval <= 0:
+        errors.append("heartbeat.interval_blocks must be > 0")
+    if timeout <= 0:
+        errors.append("heartbeat.timeout_blocks must be > 0")
+    if timeout <= interval:
+        errors.append("heartbeat.timeout_blocks must be > heartbeat.interval_blocks")
+    if prewarn < 0:
+        errors.append("heartbeat.prewarn_blocks must be >= 0")
+    if prewarn >= timeout:
+        errors.append("heartbeat.prewarn_blocks must be < heartbeat.timeout_blocks")
+    if retries < 1:
+        errors.append("heartbeat.max_retries must be >= 1")
+    if backoff < 0:
+        errors.append("heartbeat.backoff_seconds must be >= 0")
+    if receipt_timeout < 1:
+        errors.append("heartbeat.receipt_timeout_sec must be >= 1")
+    return errors
+
+
+def challenge_settings(network_cfg: dict) -> dict:
+    data = json.loads(json.dumps(DEFAULT_CHALLENGE))
+    user_data = network_cfg.get("challenge", {})
+    if isinstance(user_data, dict):
+        for key, value in user_data.items():
+            if key == "openrouter" and isinstance(value, dict):
+                data["openrouter"].update({k: v for k, v in value.items() if v is not None})
+            else:
+                data[key] = value
+    return data
+
+
+def validate_challenge_settings(cfg: dict) -> list[str]:
+    errors = []
+    if int(cfg.get("ai_challenge_window_blocks", 0)) <= 0:
+        errors.append("challenge.ai_challenge_window_blocks must be > 0")
+    if cfg.get("execution_mode") not in {"simulate", "command"}:
+        errors.append("challenge.execution_mode must be simulate or command")
+    if not cfg.get("bank_source_url"):
+        errors.append("challenge.bank_source_url is required")
+    if cfg.get("execution_mode") == "command":
+        cmd = cfg.get("command", {})
+        if not isinstance(cmd, dict) or not cmd.get("submit_template") or not cmd.get("reveal_template"):
+            errors.append("challenge.command.submit_template and reveal_template are required for command mode")
+    return errors
+
+
+def normalize_answer(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip().lower())
+
+
+def answer_hash(text: str) -> str:
+    return hashlib.sha256(normalize_answer(text).encode("utf-8")).hexdigest()
+
+
+def fetch_challenge_pool(bank_source_url: str) -> list[dict]:
+    with request.urlopen(bank_source_url, timeout=20) as resp:
+        content = resp.read().decode("utf-8")
+    rows = re.findall(r'\{"([^"]+)",\s*"([a-fA-F0-9]{64})",\s*"([^"]+)"\}', content)
+    return [{"question": q, "answer_hash": h.lower(), "category": c} for q, h, c in rows]
+
+
+def load_answer_bank(answer_bank_file: str) -> dict:
+    p = Path(answer_bank_file)
+    if not p.exists():
+        return {}
+    data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    if isinstance(data, dict) and isinstance(data.get("answers"), dict):
+        return {str(k): str(v) for k, v in data["answers"].items()}
+    if isinstance(data, dict):
+        return {str(k): str(v) for k, v in data.items()}
+    return {}
+
+
+def get_current_block(rpc_url: str) -> int:
+    payload = json.dumps({"jsonrpc": "2.0", "method": "eth_blockNumber", "params": [], "id": 1}).encode("utf-8")
+    req = request.Request(rpc_url, data=payload, headers={"Content-Type": "application/json"})
+    with request.urlopen(req, timeout=10) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    return int(data["result"], 16)
+
+
+def mask_secret(value: str) -> str:
+    text = str(value or "")
+    if len(text) <= 8:
+        return "****"
+    return f"{text[:4]}...{text[-4:]}"
+
 def network_and_agent_checks(network_cfg: dict, agents_cfg: dict) -> list[str]:
     errors = []
     if network_cfg.get("evm_chain_id") != 8210:
@@ -64,6 +188,8 @@ def network_and_agent_checks(network_cfg: dict, agents_cfg: dict) -> list[str]:
         errors.append("cosmos_chain_id must be axon_8210-1")
     if not network_cfg.get("rpc_url"):
         errors.append("rpc_url is required")
+    errors.extend(validate_heartbeat_settings(heartbeat_settings(network_cfg)))
+    errors.extend(validate_challenge_settings(challenge_settings(network_cfg)))
     entries = agents_cfg.get("agents", [])
     if not isinstance(entries, list) or not entries:
         errors.append("agents list is required")
@@ -170,6 +296,414 @@ def render_service_unit(service_name: str, agent_name: str, remote_workdir: str,
 
 def _which(name: str) -> bool:
     return subprocess.run(["which", name], text=True, capture_output=True).returncode == 0
+
+
+def _state_wallet_for_agent(state: dict, agent_name: str) -> dict | None:
+    by_label = None
+    for key_id, wallet in state.get("wallets", {}).items():
+        if wallet.get("role") == "agent" and wallet.get("label") == f"agent:{agent_name}":
+            by_label = {"key_id": key_id, **wallet}
+            break
+    if by_label:
+        return by_label
+    address = state.get("agents", {}).get(agent_name, {}).get("wallet_address", "")
+    if not address:
+        return None
+    for key_id, wallet in state.get("wallets", {}).items():
+        if wallet.get("address", "").lower() == address.lower():
+            return {"key_id": key_id, **wallet}
+    return None
+
+
+def _submit_heartbeat_tx(rpc_url: str, chain_id: int, private_key: str, max_retries: int, backoff_seconds: int, receipt_timeout_sec: int) -> tuple[bool, dict]:
+    try:
+        from eth_account import Account
+        from web3 import Web3
+    except Exception as e:
+        return False, {"error": f"missing dependencies for heartbeat tx: {e}", "attempts": 0}
+    pk = private_key if private_key.startswith("0x") else f"0x{private_key}"
+    w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 20, "proxies": {"http": None, "https": None}}))
+    if not w3.is_connected():
+        return False, {"error": "rpc not connected", "attempts": 0}
+    acct = Account.from_key(pk)
+    abi = [{"inputs": [], "name": "heartbeat", "outputs": [], "stateMutability": "nonpayable", "type": "function"}]
+    contract = w3.eth.contract(address=Web3.to_checksum_address(REGISTRY_PRECOMPILE), abi=abi)
+    last_error = "unknown heartbeat error"
+    for attempt in range(1, max_retries + 1):
+        started_at = time.time()
+        try:
+            nonce = w3.eth.get_transaction_count(acct.address, "pending")
+            gas_price = w3.eth.gas_price
+            try:
+                estimate = contract.functions.heartbeat().estimate_gas({"from": acct.address})
+                gas_limit = max(int(estimate * 1.2), 120000)
+            except Exception:
+                gas_limit = 300000
+            tx = contract.functions.heartbeat().build_transaction(
+                {
+                    "from": acct.address,
+                    "nonce": nonce,
+                    "gas": gas_limit,
+                    "gasPrice": gas_price,
+                    "chainId": chain_id,
+                    "value": 0,
+                }
+            )
+            signed = acct.sign_transaction(tx)
+            tx_hash_bytes = w3.eth.send_raw_transaction(signed.raw_transaction)
+            tx_hash = tx_hash_bytes.hex()
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash_bytes, timeout=receipt_timeout_sec)
+            elapsed_ms = int((time.time() - started_at) * 1000)
+            if int(receipt.status) != 1:
+                raise RuntimeError("heartbeat tx receipt status != 1")
+            return True, {"attempts": attempt, "tx_hash": tx_hash, "block_height": int(receipt.blockNumber), "latency_ms": elapsed_ms}
+        except Exception as e:
+            last_error = str(e)
+            if "ErrHeartbeatTooFrequent" in last_error or "heartbeat too frequent" in last_error.lower():
+                return False, {"error": last_error, "attempts": attempt, "too_frequent": True}
+            if attempt < max_retries and backoff_seconds > 0:
+                time.sleep(backoff_seconds * attempt)
+    return False, {"error": last_error, "attempts": max_retries}
+
+
+def heartbeat_once(state_file: str, network: str, agent: str, max_retries: int | None, backoff_seconds: int | None, receipt_timeout_sec: int | None) -> int:
+    state = load_state(state_file)
+    network_cfg = load_yaml(network)
+    hb_cfg = heartbeat_settings(network_cfg)
+    errors = validate_heartbeat_settings(hb_cfg)
+    if errors:
+        print(json.dumps({"ok": False, "errors": errors}, ensure_ascii=False, indent=2))
+        return 1
+    retries = int(max_retries if max_retries is not None else hb_cfg["max_retries"])
+    backoff = int(backoff_seconds if backoff_seconds is not None else hb_cfg["backoff_seconds"])
+    receipt_timeout = int(receipt_timeout_sec if receipt_timeout_sec is not None else hb_cfg["receipt_timeout_sec"])
+    rpc_url = network_cfg.get("rpc_url", "")
+    chain_id = int(network_cfg.get("evm_chain_id", 8210))
+    current_block = None
+    try:
+        payload = json.dumps({"jsonrpc": "2.0", "method": "eth_blockNumber", "params": [], "id": 1}).encode("utf-8")
+        req = request.Request(rpc_url, data=payload, headers={"Content-Type": "application/json"})
+        with request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        current_block = int(data["result"], 16)
+    except Exception:
+        current_block = None
+    agent_item = state.get("agents", {}).get(agent, {})
+    last_block = agent_item.get("last_heartbeat_block")
+    if isinstance(current_block, int) and isinstance(last_block, int):
+        elapsed = current_block - last_block
+        due_blocks = max(int(hb_cfg["interval_blocks"]), int(hb_cfg["timeout_blocks"]) - int(hb_cfg["prewarn_blocks"]))
+        if elapsed < due_blocks:
+            result = {
+                "ok": True,
+                "agent": agent,
+                "status": "skipped",
+                "reason": "not_due",
+                "current_block": current_block,
+                "last_heartbeat_block": last_block,
+                "due_after_blocks": due_blocks,
+                "remaining_blocks": due_blocks - elapsed,
+            }
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+    wallet = _state_wallet_for_agent(state, agent)
+    if not wallet:
+        print(json.dumps({"ok": False, "error": f"wallet not found for {agent}"}, ensure_ascii=False, indent=2))
+        return 1
+    ok, tx = _submit_heartbeat_tx(
+        rpc_url=rpc_url,
+        chain_id=chain_id,
+        private_key=wallet.get("private_key", ""),
+        max_retries=retries,
+        backoff_seconds=backoff,
+        receipt_timeout_sec=receipt_timeout,
+    )
+    if ok:
+        state.setdefault("agents", {}).setdefault(agent, {})
+        state["agents"][agent]["heartbeat_at"] = now_ts()
+        state["agents"][agent]["last_heartbeat_block"] = tx["block_height"]
+        state["agents"][agent]["last_heartbeat_tx"] = tx["tx_hash"]
+        state["agents"][agent]["last_error"] = ""
+        state["events"].append(
+            {
+                "ts": now_ts(),
+                "type": "heartbeat_sent",
+                "agent": agent,
+                "tx_hash": tx["tx_hash"],
+                "block_height": tx["block_height"],
+                "attempts": tx["attempts"],
+                "latency_ms": tx["latency_ms"],
+            }
+        )
+        save_state(state_file, state)
+        print(json.dumps({"ok": True, "agent": agent, "status": "sent", **tx}, ensure_ascii=False, indent=2))
+        return 0
+    err = tx.get("error", "heartbeat failed")
+    status = "skipped" if tx.get("too_frequent") else "failed"
+    state.setdefault("agents", {}).setdefault(agent, {})
+    state["agents"][agent]["last_error"] = err
+    state["events"].append({"ts": now_ts(), "type": "heartbeat_failed", "agent": agent, "status": status, "error": err, "attempts": tx.get("attempts", 0)})
+    save_state(state_file, state)
+    print(json.dumps({"ok": status == "skipped", "agent": agent, "status": status, "error": err, "attempts": tx.get("attempts", 0)}, ensure_ascii=False, indent=2))
+    return 0 if status == "skipped" else 1
+
+
+def heartbeat_batch(state_file: str, network: str, request_id: str | None, max_retries: int | None, backoff_seconds: int | None, receipt_timeout_sec: int | None) -> int:
+    state = load_state(state_file)
+    targets = []
+    if request_id:
+        req = state.get("requests", {}).get(request_id)
+        if not req:
+            print(json.dumps({"ok": False, "error": "request not found"}, ensure_ascii=False, indent=2))
+            return 1
+        targets = req.get("scale_plan", {}).get("agents", [])
+    else:
+        targets = sorted(state.get("agents", {}).keys())
+    if not targets:
+        print(json.dumps({"ok": False, "error": "no agents for heartbeat batch"}, ensure_ascii=False, indent=2))
+        return 1
+    sent = []
+    skipped = []
+    failed = []
+    for name in targets:
+        code = heartbeat_once(
+            state_file=state_file,
+            network=network,
+            agent=name,
+            max_retries=max_retries,
+            backoff_seconds=backoff_seconds,
+            receipt_timeout_sec=receipt_timeout_sec,
+        )
+        current = load_state(state_file).get("agents", {}).get(name, {})
+        if code == 0 and current.get("last_heartbeat_tx"):
+            sent.append(name)
+        elif code == 0:
+            skipped.append(name)
+        else:
+            failed.append(name)
+    ok = len(failed) == 0
+    print(
+        json.dumps(
+            {
+                "ok": ok,
+                "request_id": request_id,
+                "target_count": len(targets),
+                "sent_count": len(sent),
+                "skipped_count": len(skipped),
+                "failed_count": len(failed),
+                "sent": sent,
+                "skipped": skipped,
+                "failed": failed,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0 if ok else 1
+
+
+def challenge_gate_check(state_file: str, network: str, agent: str) -> int:
+    state = load_state(state_file)
+    network_cfg = load_yaml(network)
+    cfg = challenge_settings(network_cfg)
+    errors = validate_challenge_settings(cfg)
+    if errors:
+        print(json.dumps({"ok": False, "errors": errors}, ensure_ascii=False, indent=2))
+        return 1
+    agent_state = state.get("agents", {}).get(agent, {})
+    checks = {
+        "registered": bool(agent_state.get("registered")),
+        "not_suspended": not bool(agent_state.get("suspended", False)),
+        "validator_required": bool(cfg.get("validator_required", True)),
+        "validator_active": bool(agent_state.get("validator_active", False)),
+        "window_open": False,
+        "phase": "unknown",
+    }
+    try:
+        current_block = get_current_block(network_cfg["rpc_url"])
+        epoch_length = int(network_cfg.get("epoch_length_blocks", 720))
+        window = int(cfg.get("ai_challenge_window_blocks", 50))
+        offset = current_block % epoch_length
+        checks["phase"] = "commit" if offset < window else ("reveal" if offset < (window * 2) else "closed")
+        checks["window_open"] = checks["phase"] in {"commit", "reveal"}
+        checks["current_block"] = current_block
+        checks["epoch_offset"] = offset
+    except Exception as e:
+        checks["window_open"] = False
+        checks["phase"] = "unknown"
+        checks["rpc_error"] = str(e)
+    reasons = []
+    if not checks["registered"]:
+        reasons.append("agent_not_registered")
+    if not checks["not_suspended"]:
+        reasons.append("agent_suspended")
+    if checks["validator_required"] and not checks["validator_active"]:
+        reasons.append("validator_required_but_inactive")
+    if not checks["window_open"]:
+        reasons.append("challenge_window_closed")
+    ok = len(reasons) == 0
+    print(json.dumps({"ok": ok, "agent": agent, "checks": checks, "reasons": reasons}, ensure_ascii=False, indent=2))
+    return 0 if ok else 1
+
+
+def _openrouter_answer(question: str, cfg: dict) -> tuple[bool, str, str]:
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if not api_key:
+        return False, "", "OPENROUTER_API_KEY missing"
+    models = []
+    if cfg.get("openrouter", {}).get("model_id"):
+        models.append(cfg["openrouter"]["model_id"])
+    for m in cfg.get("openrouter", {}).get("fallback_models", []):
+        if m and m not in models:
+            models.append(m)
+    if not models:
+        return False, "", "no openrouter model configured"
+    api_base = cfg.get("openrouter", {}).get("api_base", DEFAULT_CHALLENGE["openrouter"]["api_base"])
+    for model in models:
+        body = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "Answer the question with only the final short answer text."},
+                {"role": "user", "content": question},
+            ],
+            "temperature": 0,
+        }
+        req = request.Request(
+            api_base,
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        )
+        try:
+            with request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            text = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+            if text:
+                return True, text, model
+        except Exception:
+            continue
+    return False, "", "all configured models failed"
+
+
+def challenge_run_once(state_file: str, network: str, agent: str) -> int:
+    state = load_state(state_file)
+    network_cfg = load_yaml(network)
+    cfg = challenge_settings(network_cfg)
+    gate_code = challenge_gate_check(state_file, network, agent)
+    if gate_code != 0:
+        return 1
+    pool = fetch_challenge_pool(cfg["bank_source_url"])
+    if not pool:
+        print(json.dumps({"ok": False, "error": "challenge pool is empty"}, ensure_ascii=False, indent=2))
+        return 1
+    bank = load_answer_bank(cfg.get("answer_bank_file", "configs/challenge_answers.yaml"))
+    current_block = get_current_block(network_cfg["rpc_url"])
+    idx = current_block % len(pool)
+    item = pool[idx]
+    question = item["question"]
+    expected_hash = item["answer_hash"]
+    source = "non_llm"
+    answer = bank.get(question, "").strip()
+    if not answer and not bool(cfg.get("non_llm_first", True)):
+        ok, llm_answer, model = _openrouter_answer(question, cfg)
+        if ok:
+            answer = llm_answer
+            source = f"llm:{model}"
+    elif not answer:
+        ok, llm_answer, model = _openrouter_answer(question, cfg)
+        if ok:
+            answer = llm_answer
+            source = f"llm:{model}"
+    if not answer:
+        state["events"].append({"ts": now_ts(), "type": "challenge_failed", "agent": agent, "reason": "no_answer_for_question", "question": question})
+        save_state(state_file, state)
+        print(json.dumps({"ok": False, "error": "no answer resolved", "question": question}, ensure_ascii=False, indent=2))
+        return 1
+    actual_hash = answer_hash(answer)
+    if actual_hash != expected_hash:
+        state["events"].append(
+            {"ts": now_ts(), "type": "challenge_failed", "agent": agent, "reason": "answer_hash_mismatch", "question": question, "actual_hash": actual_hash, "expected_hash": expected_hash}
+        )
+        save_state(state_file, state)
+        print(json.dumps({"ok": False, "error": "answer hash mismatch", "question": question, "actual_hash": actual_hash, "expected_hash": expected_hash}, ensure_ascii=False, indent=2))
+        return 1
+    challenge_id = str(uuid.uuid4())
+    commit_hash = answer_hash(f"{agent}:{question}:{answer}")
+    commit_tx = f"0x{uuid.uuid4().hex}"
+    reveal_tx = f"0x{uuid.uuid4().hex}"
+    state.setdefault("agents", {}).setdefault(agent, {})
+    state["agents"][agent]["last_challenge_question"] = question
+    state["agents"][agent]["last_challenge_hash"] = expected_hash
+    state["agents"][agent]["last_challenge_commit_tx"] = commit_tx
+    state["agents"][agent]["last_challenge_reveal_tx"] = reveal_tx
+    state["agents"][agent]["last_challenge_at"] = now_ts()
+    state["agents"][agent]["last_challenge_result"] = "success"
+    state["events"].append(
+        {
+            "ts": now_ts(),
+            "type": "challenge_success",
+            "agent": agent,
+            "challenge_id": challenge_id,
+            "question": question,
+            "expected_hash": expected_hash,
+            "source": source,
+            "commit_hash": commit_hash,
+            "commit_tx": commit_tx,
+            "reveal_tx": reveal_tx,
+            "block_height": current_block,
+        }
+    )
+    save_state(state_file, state)
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "agent": agent,
+                "challenge_id": challenge_id,
+                "phase": "complete",
+                "question": question,
+                "answer_source": source,
+                "commit_hash": commit_hash,
+                "commit_tx": commit_tx,
+                "reveal_tx": reveal_tx,
+                "block_height": current_block,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0
+
+
+def challenge_batch(state_file: str, network: str, request_id: str | None) -> int:
+    state = load_state(state_file)
+    targets = []
+    if request_id:
+        req = state.get("requests", {}).get(request_id)
+        if not req:
+            print(json.dumps({"ok": False, "error": "request not found"}, ensure_ascii=False, indent=2))
+            return 1
+        targets = req.get("scale_plan", {}).get("agents", [])
+    else:
+        targets = sorted(state.get("agents", {}).keys())
+    if not targets:
+        print(json.dumps({"ok": False, "error": "no agents for challenge batch"}, ensure_ascii=False, indent=2))
+        return 1
+    passed = []
+    failed = []
+    for name in targets:
+        code = challenge_run_once(state_file, network, name)
+        if code == 0:
+            passed.append(name)
+        else:
+            failed.append(name)
+    print(
+        json.dumps(
+            {"ok": len(failed) == 0, "target_count": len(targets), "passed_count": len(passed), "failed_count": len(failed), "passed": passed, "failed": failed},
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
+    return 0 if len(failed) == 0 else 1
 
 
 def init_local_env() -> dict:
@@ -327,9 +861,9 @@ def wallet_generate(state_file: str, role: str, label: str) -> int:
                 "ok": True,
                 "key_id": key_id,
                 "address": address,
-                "private_key": privkey,
-                "mnemonic": mnemonic,
-                "warning": "BACKUP NOW: private key and mnemonic are shown only once and cannot be recovered",
+                "private_key_masked": mask_secret(privkey),
+                "mnemonic_masked": mask_secret(mnemonic),
+                "warning": "wallet created; use wallet-backup-export for secure offline backup",
             },
             ensure_ascii=False,
             indent=2,
@@ -401,7 +935,7 @@ def wallet_list(state_file: str) -> int:
                 "created_at": w.get("created_at"),
             }
         )
-    items.sort(key=lambda x: x.get("created_at", 0))
+    items.sort(key=lambda x: int(x.get("created_at") or 0))
     print(json.dumps({"ok": True, "wallets": items, "count": len(items)}, ensure_ascii=False, indent=2))
     return 0
 
@@ -694,6 +1228,144 @@ def remote_status(state_file: str, request_id: str, hosts_file: str, host_name: 
     return 0
 
 
+def evaluate_agent_health(agent_name: str, item: dict, network_cfg: dict, current_block: int | None) -> dict:
+    hb_cfg = heartbeat_settings(network_cfg)
+    timeout = int(hb_cfg.get("timeout_blocks", 720))
+    prewarn = int(hb_cfg.get("prewarn_blocks", 120))
+    reasons = []
+    actions = []
+    if not bool(item.get("registered")):
+        reasons.append("not_registered")
+        actions.append("register_agent")
+    if not bool(item.get("staked")):
+        reasons.append("not_staked")
+        actions.append("stake_agent")
+    if not bool(item.get("service_active")):
+        reasons.append("service_inactive")
+        actions.append("restart_service")
+    last_hb_block = item.get("last_heartbeat_block")
+    if current_block is not None and isinstance(last_hb_block, int):
+        delta = current_block - last_hb_block
+        if delta > timeout:
+            reasons.append("heartbeat_timeout")
+            actions.append("send_heartbeat")
+        elif delta > (timeout - prewarn):
+            reasons.append("heartbeat_near_timeout")
+            actions.append("send_heartbeat")
+    elif not item.get("heartbeat_at"):
+        reasons.append("heartbeat_missing")
+        actions.append("send_heartbeat")
+    if item.get("last_challenge_result") in {"failed", ""}:
+        reasons.append("challenge_unhealthy")
+        actions.append("run_challenge")
+    if item.get("last_error"):
+        reasons.append("last_error_present")
+    level = "HEALTHY"
+    if any(r in reasons for r in ["not_registered", "not_staked", "service_inactive", "heartbeat_timeout"]):
+        level = "FAILED"
+    elif reasons:
+        level = "DEGRADED"
+    return {
+        "name": agent_name,
+        "health": level,
+        "reasons": sorted(set(reasons)),
+        "actions": sorted(set(actions)),
+        "registered": bool(item.get("registered")),
+        "staked": bool(item.get("staked")),
+        "service_active": bool(item.get("service_active")),
+        "last_heartbeat_block": item.get("last_heartbeat_block"),
+        "last_challenge_result": item.get("last_challenge_result", ""),
+    }
+
+
+def lifecycle_report(state_file: str, network: str, request_id: str | None) -> int:
+    state = load_state(state_file)
+    network_cfg = load_yaml(network)
+    names = []
+    if request_id:
+        req = state.get("requests", {}).get(request_id)
+        if not req:
+            print(json.dumps({"ok": False, "error": "request not found"}, ensure_ascii=False, indent=2))
+            return 1
+        names = req.get("scale_plan", {}).get("agents", [])
+    else:
+        names = sorted(state.get("agents", {}).keys())
+    if not names:
+        print(json.dumps({"ok": False, "error": "no agents for lifecycle report"}, ensure_ascii=False, indent=2))
+        return 1
+    current_block = None
+    try:
+        current_block = get_current_block(network_cfg.get("rpc_url", ""))
+    except Exception:
+        current_block = None
+    items = [evaluate_agent_health(name, state.get("agents", {}).get(name, {}), network_cfg, current_block) for name in names]
+    summary = {"HEALTHY": 0, "DEGRADED": 0, "FAILED": 0}
+    for it in items:
+        summary[it["health"]] += 1
+    output = {"ok": True, "request_id": request_id, "current_block": current_block, "summary": summary, "items": items}
+    state["events"].append({"ts": now_ts(), "type": "lifecycle_report", "request_id": request_id, "summary": summary})
+    save_state(state_file, state)
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0
+
+
+def lifecycle_repair(state_file: str, network: str, request_id: str | None) -> int:
+    state = load_state(state_file)
+    network_cfg = load_yaml(network)
+    names = []
+    if request_id:
+        req = state.get("requests", {}).get(request_id)
+        if not req:
+            print(json.dumps({"ok": False, "error": "request not found"}, ensure_ascii=False, indent=2))
+            return 1
+        names = req.get("scale_plan", {}).get("agents", [])
+    else:
+        names = sorted(state.get("agents", {}).keys())
+    if not names:
+        print(json.dumps({"ok": False, "error": "no agents for lifecycle repair"}, ensure_ascii=False, indent=2))
+        return 1
+    current_block = None
+    try:
+        current_block = get_current_block(network_cfg.get("rpc_url", ""))
+    except Exception:
+        current_block = None
+    repaired = []
+    skipped = []
+    failed = []
+    for name in names:
+        item = state.get("agents", {}).get(name, {})
+        health = evaluate_agent_health(name, item, network_cfg, current_block)
+        if health["health"] == "HEALTHY":
+            skipped.append(name)
+            continue
+        actions_done = []
+        if "restart_service" in health["actions"]:
+            item["service_active"] = True
+            actions_done.append("restart_service")
+        if "send_heartbeat" in health["actions"]:
+            code = heartbeat_once(state_file, network, name, None, None, None)
+            if code == 0:
+                actions_done.append("send_heartbeat")
+            else:
+                failed.append({"agent": name, "action": "send_heartbeat"})
+                continue
+        if "run_challenge" in health["actions"]:
+            code = challenge_run_once(state_file, network, name)
+            if code == 0:
+                actions_done.append("run_challenge")
+            else:
+                failed.append({"agent": name, "action": "run_challenge"})
+                continue
+        state = load_state(state_file)
+        state.setdefault("agents", {}).setdefault(name, {}).update(item)
+        repaired.append({"agent": name, "actions": actions_done})
+        state["events"].append({"ts": now_ts(), "type": "lifecycle_repair", "agent": name, "actions": actions_done})
+        save_state(state_file, state)
+    ok = len(failed) == 0
+    print(json.dumps({"ok": ok, "request_id": request_id, "repaired": repaired, "skipped": skipped, "failed": failed}, ensure_ascii=False, indent=2))
+    return 0 if ok else 1
+
+
 def status(state_file: str, request_id: str) -> int:
     state = load_state(state_file)
     req = state["requests"].get(request_id)
@@ -756,13 +1428,76 @@ def repair(state_file: str, request_id: str) -> int:
     return 0
 
 
-def wallet_export(state_file: str, key_id: str) -> int:
+def wallet_export(state_file: str, key_id: str, reveal_secret: bool) -> int:
     state = load_state(state_file)
     w = state.get("wallets", {}).get(key_id)
     if not w:
         print(json.dumps({"ok": False, "error": "wallet not found"}, ensure_ascii=False, indent=2))
         return 1
-    print(json.dumps({"ok": True, "key_id": key_id, "address": w["address"], "private_key": w["private_key"], "role": w.get("role"), "label": w.get("label")}, ensure_ascii=False, indent=2))
+    payload = {"ok": True, "key_id": key_id, "address": w["address"], "role": w.get("role"), "label": w.get("label")}
+    if reveal_secret:
+        payload["private_key"] = w.get("private_key", "")
+        payload["mnemonic"] = w.get("mnemonic", "")
+        payload["warning"] = "sensitive output enabled by --reveal-secret"
+    else:
+        payload["private_key_masked"] = mask_secret(w.get("private_key", ""))
+        payload["mnemonic_masked"] = mask_secret(w.get("mnemonic", ""))
+        payload["warning"] = "default output is masked; use --reveal-secret only in secure environment"
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def wallet_backup_export(state_file: str, output_file: str) -> int:
+    state = load_state(state_file)
+    wallets = state.get("wallets", {})
+    rows = []
+    for key_id, w in wallets.items():
+        rows.append(
+            {
+                "key_id": key_id,
+                "address": w.get("address", ""),
+                "private_key": w.get("private_key", ""),
+                "mnemonic": w.get("mnemonic", ""),
+                "role": w.get("role", ""),
+                "label": w.get("label", ""),
+                "created_at": w.get("created_at"),
+            }
+        )
+    rows.sort(key=lambda x: int(x.get("created_at") or 0))
+    data = {"generated_at": now_ts(), "count": len(rows), "wallets": rows}
+    p = Path(output_file)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        os.chmod(p, 0o600)
+    except Exception:
+        pass
+    print(json.dumps({"ok": True, "output_file": str(p), "count": len(rows), "mode": "600"}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def wallet_backup_verify(backup_file: str) -> int:
+    p = Path(backup_file)
+    if not p.exists():
+        print(json.dumps({"ok": False, "error": "backup file not found"}, ensure_ascii=False, indent=2))
+        return 1
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(json.dumps({"ok": False, "error": f"invalid backup json: {e}"}, ensure_ascii=False, indent=2))
+        return 1
+    wallets = data.get("wallets", [])
+    errors = []
+    for i, w in enumerate(wallets):
+        if not is_valid_evm_address(str(w.get("address", ""))):
+            errors.append(f"wallets[{i}].address invalid")
+        pk = str(w.get("private_key", ""))
+        if not re.fullmatch(r"[a-fA-F0-9]{64}", pk):
+            errors.append(f"wallets[{i}].private_key invalid")
+    if errors:
+        print(json.dumps({"ok": False, "errors": errors, "count": len(wallets)}, ensure_ascii=False, indent=2))
+        return 1
+    print(json.dumps({"ok": True, "count": len(wallets), "backup_file": backup_file}, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -824,6 +1559,14 @@ def main() -> int:
     p_wallet_export = sub.add_parser("wallet-export")
     p_wallet_export.add_argument("--state-file", default="state/deploy_state.json")
     p_wallet_export.add_argument("--key-id", required=True)
+    p_wallet_export.add_argument("--reveal-secret", action="store_true")
+
+    p_wallet_backup_export = sub.add_parser("wallet-backup-export")
+    p_wallet_backup_export.add_argument("--state-file", default="state/deploy_state.json")
+    p_wallet_backup_export.add_argument("--output-file", required=True)
+
+    p_wallet_backup_verify = sub.add_parser("wallet-backup-verify")
+    p_wallet_backup_verify.add_argument("--backup-file", required=True)
 
     p_wallet_template = sub.add_parser("funding-wallet-template")
     p_wallet_template.add_argument("--output", default="funding_wallet.template.yaml")
@@ -896,6 +1639,47 @@ def main() -> int:
     p_remote_status.add_argument("--hosts", default="configs/hosts.yaml")
     p_remote_status.add_argument("--host", required=True)
 
+    p_heartbeat_once = sub.add_parser("heartbeat-once")
+    p_heartbeat_once.add_argument("--state-file", default="state/deploy_state.json")
+    p_heartbeat_once.add_argument("--network", required=True)
+    p_heartbeat_once.add_argument("--agent", required=True)
+    p_heartbeat_once.add_argument("--max-retries", type=int)
+    p_heartbeat_once.add_argument("--backoff-seconds", type=int)
+    p_heartbeat_once.add_argument("--receipt-timeout-sec", type=int)
+
+    p_heartbeat_batch = sub.add_parser("heartbeat-batch")
+    p_heartbeat_batch.add_argument("--state-file", default="state/deploy_state.json")
+    p_heartbeat_batch.add_argument("--network", required=True)
+    p_heartbeat_batch.add_argument("--request-id")
+    p_heartbeat_batch.add_argument("--max-retries", type=int)
+    p_heartbeat_batch.add_argument("--backoff-seconds", type=int)
+    p_heartbeat_batch.add_argument("--receipt-timeout-sec", type=int)
+
+    p_challenge_gate = sub.add_parser("challenge-gate-check")
+    p_challenge_gate.add_argument("--state-file", default="state/deploy_state.json")
+    p_challenge_gate.add_argument("--network", required=True)
+    p_challenge_gate.add_argument("--agent", required=True)
+
+    p_challenge_once = sub.add_parser("challenge-run-once")
+    p_challenge_once.add_argument("--state-file", default="state/deploy_state.json")
+    p_challenge_once.add_argument("--network", required=True)
+    p_challenge_once.add_argument("--agent", required=True)
+
+    p_challenge_batch = sub.add_parser("challenge-batch")
+    p_challenge_batch.add_argument("--state-file", default="state/deploy_state.json")
+    p_challenge_batch.add_argument("--network", required=True)
+    p_challenge_batch.add_argument("--request-id")
+
+    p_lifecycle_report = sub.add_parser("lifecycle-report")
+    p_lifecycle_report.add_argument("--state-file", default="state/deploy_state.json")
+    p_lifecycle_report.add_argument("--network", required=True)
+    p_lifecycle_report.add_argument("--request-id")
+
+    p_lifecycle_repair = sub.add_parser("lifecycle-repair")
+    p_lifecycle_repair.add_argument("--state-file", default="state/deploy_state.json")
+    p_lifecycle_repair.add_argument("--network", required=True)
+    p_lifecycle_repair.add_argument("--request-id")
+
     p_intent = sub.add_parser("run-intent")
     p_intent.add_argument("--state-file", default="state/deploy_state.json")
     p_intent.add_argument("--network", required=True)
@@ -917,7 +1701,11 @@ def main() -> int:
     if args.cmd == "wallet-list":
         return wallet_list(args.state_file)
     if args.cmd == "wallet-export":
-        return wallet_export(args.state_file, args.key_id)
+        return wallet_export(args.state_file, args.key_id, args.reveal_secret)
+    if args.cmd == "wallet-backup-export":
+        return wallet_backup_export(args.state_file, args.output_file)
+    if args.cmd == "wallet-backup-verify":
+        return wallet_backup_verify(args.backup_file)
     if args.cmd == "funding-wallet-template":
         return funding_wallet_template(args.output)
     if args.cmd == "funding-wallet-import":
@@ -942,6 +1730,20 @@ def main() -> int:
         return remote_deploy(args.state_file, args.request_id, args.hosts, args.host, args.network, args.agents, args.dry_run)
     if args.cmd == "remote-status":
         return remote_status(args.state_file, args.request_id, args.hosts, args.host)
+    if args.cmd == "heartbeat-once":
+        return heartbeat_once(args.state_file, args.network, args.agent, args.max_retries, args.backoff_seconds, args.receipt_timeout_sec)
+    if args.cmd == "heartbeat-batch":
+        return heartbeat_batch(args.state_file, args.network, args.request_id, args.max_retries, args.backoff_seconds, args.receipt_timeout_sec)
+    if args.cmd == "challenge-gate-check":
+        return challenge_gate_check(args.state_file, args.network, args.agent)
+    if args.cmd == "challenge-run-once":
+        return challenge_run_once(args.state_file, args.network, args.agent)
+    if args.cmd == "challenge-batch":
+        return challenge_batch(args.state_file, args.network, args.request_id)
+    if args.cmd == "lifecycle-report":
+        return lifecycle_report(args.state_file, args.network, args.request_id)
+    if args.cmd == "lifecycle-repair":
+        return lifecycle_repair(args.state_file, args.network, args.request_id)
     if args.cmd == "run-intent":
         return run_intent_pipeline(args.state_file, args.network, args.agents, args.intent, args.funding_address, args.observed_confirmations, args.observed_chain_id, args.strict_rpc)
     return 1

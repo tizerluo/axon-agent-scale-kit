@@ -1,0 +1,11 @@
+answers:
+  "What is the time complexity of binary search?": "O(log n)"
+  "In Ethereum, what opcode is used to transfer ETH to another address?": "CALL"
+  "What consensus algorithm does CometBFT use?": "Tendermint BFT"
+  "What is the derivative of x^3 with respect to x?": "3x^2"
+  "In Go, what keyword is used to launch a concurrent goroutine?": "go"
+  "What data structure uses LIFO (Last In First Out)?": "stack"
+  "What is the SHA-256 hash length in bits?": "256"
+  "What layer of the OSI model does TCP operate at?": "transport layer"
+  "In a Merkle tree, what is stored in leaf nodes?": "hashes of data blocks"
+  "What EIP introduced EIP-1559 fee mechanism?": "EIP-1559"

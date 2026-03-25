@@ -262,7 +262,122 @@ class AxonCtlRegressionTests(unittest.TestCase):
         self.assertEqual(axonctl.wallet_generate(str(self.state_file), role="funding", label="test-funding-2"), 0)
         self.assertEqual(axonctl.wallet_list(str(self.state_file)), 0)
         key_id = next(iter(axonctl.load_state(str(self.state_file))["wallets"]))
-        self.assertEqual(axonctl.wallet_export(str(self.state_file), key_id), 0)
+        self.assertEqual(axonctl.wallet_export(str(self.state_file), key_id, reveal_secret=False), 0)
+        backup_file = Path(self.temp_dir.name) / "wallet_backup.json"
+        self.assertEqual(axonctl.wallet_backup_export(str(self.state_file), str(backup_file)), 0)
+        self.assertEqual(axonctl.wallet_backup_verify(str(backup_file)), 0)
+
+    @mock.patch("axonctl.rpc_chain_id", return_value=(True, 8210, None))
+    def test_validate_fails_with_invalid_heartbeat_settings(self, _rpc_mock: mock.Mock) -> None:
+        self.network_file.write_text(
+            yaml.safe_dump(
+                {
+                    "rpc_url": "https://mainnet-rpc.axonchain.ai/",
+                    "evm_chain_id": 8210,
+                    "cosmos_chain_id": "axon_8210-1",
+                    "heartbeat": {"interval_blocks": 200, "timeout_blocks": 100},
+                },
+                sort_keys=False,
+                allow_unicode=True,
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(axonctl.validate(str(self.network_file), str(self.agents_file), strict_rpc=True), 1)
+
+    @mock.patch("axonctl._submit_heartbeat_tx", return_value=(True, {"attempts": 1, "tx_hash": "0xabc", "block_height": 123456, "latency_ms": 50}))
+    @mock.patch("axonctl.request.urlopen", side_effect=RuntimeError("skip block query"))
+    def test_heartbeat_once_updates_state(self, _urlopen_mock: mock.Mock, _submit_mock: mock.Mock) -> None:
+        state = axonctl.load_state(str(self.state_file))
+        state["agents"]["agent-001"] = {"registered": True, "wallet_address": "0x2222222222222222222222222222222222222222"}
+        state["wallets"]["a1"] = {
+            "address": "0x2222222222222222222222222222222222222222",
+            "private_key": "a" * 64,
+            "role": "agent",
+            "label": "agent:agent-001",
+        }
+        axonctl.save_state(str(self.state_file), state)
+        self.assertEqual(axonctl.heartbeat_once(str(self.state_file), str(self.network_file), "agent-001", None, None, None), 0)
+        after = axonctl.load_state(str(self.state_file))
+        self.assertEqual(after["agents"]["agent-001"]["last_heartbeat_tx"], "0xabc")
+        self.assertEqual(after["agents"]["agent-001"]["last_heartbeat_block"], 123456)
+
+    @mock.patch("axonctl._submit_heartbeat_tx", return_value=(True, {"attempts": 1, "tx_hash": "0xdef", "block_height": 223456, "latency_ms": 60}))
+    @mock.patch("axonctl.request.urlopen", side_effect=RuntimeError("skip block query"))
+    def test_heartbeat_batch_with_request_id(self, _urlopen_mock: mock.Mock, _submit_mock: mock.Mock) -> None:
+        state = axonctl.load_state(str(self.state_file))
+        state["requests"]["r1"] = {"scale_plan": {"agents": ["agent-001", "agent-002"]}}
+        state["agents"]["agent-001"] = {"registered": True, "wallet_address": "0x2222222222222222222222222222222222222222"}
+        state["agents"]["agent-002"] = {"registered": True, "wallet_address": "0x3333333333333333333333333333333333333333"}
+        state["wallets"]["a1"] = {
+            "address": "0x2222222222222222222222222222222222222222",
+            "private_key": "a" * 64,
+            "role": "agent",
+            "label": "agent:agent-001",
+        }
+        state["wallets"]["a2"] = {
+            "address": "0x3333333333333333333333333333333333333333",
+            "private_key": "b" * 64,
+            "role": "agent",
+            "label": "agent:agent-002",
+        }
+        axonctl.save_state(str(self.state_file), state)
+        self.assertEqual(axonctl.heartbeat_batch(str(self.state_file), str(self.network_file), "r1", None, None, None), 0)
+        after = axonctl.load_state(str(self.state_file))
+        self.assertEqual(after["agents"]["agent-001"]["last_heartbeat_tx"], "0xdef")
+        self.assertEqual(after["agents"]["agent-002"]["last_heartbeat_tx"], "0xdef")
+
+    @mock.patch("axonctl.get_current_block", return_value=7201)
+    def test_challenge_gate_check_rejects_non_validator(self, _block_mock: mock.Mock) -> None:
+        state = axonctl.load_state(str(self.state_file))
+        state["agents"]["agent-001"] = {"registered": True, "suspended": False, "validator_active": False}
+        axonctl.save_state(str(self.state_file), state)
+        self.assertEqual(axonctl.challenge_gate_check(str(self.state_file), str(self.network_file), "agent-001"), 1)
+
+    @mock.patch("axonctl.challenge_gate_check", return_value=0)
+    @mock.patch("axonctl.get_current_block", return_value=100)
+    @mock.patch("axonctl.fetch_challenge_pool")
+    @mock.patch("axonctl.load_answer_bank")
+    def test_challenge_run_once_non_llm_success(self, bank_mock: mock.Mock, pool_mock: mock.Mock, _block_mock: mock.Mock, _gate_mock: mock.Mock) -> None:
+        question = "What is the time complexity of binary search?"
+        answer = "O(log n)"
+        pool_mock.return_value = [{"question": question, "answer_hash": axonctl.answer_hash(answer), "category": "algorithms"}]
+        bank_mock.return_value = {question: answer}
+        state = axonctl.load_state(str(self.state_file))
+        state["agents"]["agent-001"] = {"registered": True, "validator_active": True}
+        axonctl.save_state(str(self.state_file), state)
+        self.assertEqual(axonctl.challenge_run_once(str(self.state_file), str(self.network_file), "agent-001"), 0)
+        after = axonctl.load_state(str(self.state_file))
+        self.assertEqual(after["agents"]["agent-001"]["last_challenge_result"], "success")
+
+    @mock.patch("axonctl.challenge_gate_check", return_value=0)
+    @mock.patch("axonctl.get_current_block", return_value=100)
+    @mock.patch("axonctl.fetch_challenge_pool")
+    @mock.patch("axonctl.load_answer_bank")
+    def test_challenge_run_once_hash_mismatch_fails(self, bank_mock: mock.Mock, pool_mock: mock.Mock, _block_mock: mock.Mock, _gate_mock: mock.Mock) -> None:
+        question = "What is the time complexity of binary search?"
+        pool_mock.return_value = [{"question": question, "answer_hash": axonctl.answer_hash("wrong"), "category": "algorithms"}]
+        bank_mock.return_value = {question: "O(log n)"}
+        state = axonctl.load_state(str(self.state_file))
+        state["agents"]["agent-001"] = {"registered": True, "validator_active": True}
+        axonctl.save_state(str(self.state_file), state)
+        self.assertEqual(axonctl.challenge_run_once(str(self.state_file), str(self.network_file), "agent-001"), 1)
+
+    @mock.patch("axonctl.get_current_block", return_value=1000)
+    def test_lifecycle_report_levels(self, _block_mock: mock.Mock) -> None:
+        state = axonctl.load_state(str(self.state_file))
+        state["agents"]["agent-001"] = {"registered": True, "staked": True, "service_active": True, "last_heartbeat_block": 990, "last_challenge_result": "success"}
+        state["agents"]["agent-002"] = {"registered": True, "staked": True, "service_active": True, "last_heartbeat_block": 100, "last_challenge_result": "failed"}
+        axonctl.save_state(str(self.state_file), state)
+        self.assertEqual(axonctl.lifecycle_report(str(self.state_file), str(self.network_file), None), 0)
+
+    @mock.patch("axonctl.challenge_run_once", return_value=0)
+    @mock.patch("axonctl.heartbeat_once", return_value=0)
+    @mock.patch("axonctl.get_current_block", return_value=1000)
+    def test_lifecycle_repair_runs_actions(self, _block_mock: mock.Mock, _hb_mock: mock.Mock, _ch_mock: mock.Mock) -> None:
+        state = axonctl.load_state(str(self.state_file))
+        state["agents"]["agent-001"] = {"registered": True, "staked": True, "service_active": False, "last_heartbeat_block": 100, "last_challenge_result": "failed"}
+        axonctl.save_state(str(self.state_file), state)
+        self.assertEqual(axonctl.lifecycle_repair(str(self.state_file), str(self.network_file), None), 0)
 
 
 if __name__ == "__main__":
