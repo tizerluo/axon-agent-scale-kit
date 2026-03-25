@@ -167,3 +167,18 @@
 - 禁止本地与服务器同时运行 heartbeat daemon（避免双写冲突）。
 - 禁止“仅 scp 不 push”直接覆盖线上（避免版本不可追溯）。
 - 禁止跳过服务器验收直接宣告完成。
+
+## 13. 关键口径补充（下阶段修复必读）
+
+- 注册 Burn20 机制口径  
+  - AXON 的 20 AXON 燃烧是 `register(payable)` 内置流程，不存在“单独补交 burn 接口”。
+  - 已注册地址若声誉异常，应走审计与生命周期修复，不应假设可补一笔 burn 修复历史。
+
+- 官方 skill 口径风险待回报  
+  - 已识别“注册是否需要单独 burn”存在误导风险，后续需要整理证据并向官方 GitHub 反馈。
+  - 新任务中如果涉及注册流程说明，必须以官方代码口径优先，不沿用旧说法。
+
+- 并行守护系统说明（避免混淆）  
+  - scale-kit 心跳守护：`axon-heartbeat-daemon.service`（`/home/ubuntu/axon-agent-scale`）
+  - QQClaw 独立守护：`axon-agent-qqclaw.service`（`/opt/axon-node/scripts`）
+  - 两套系统并行存在、职责不同，排障时必须先区分来源后再处理。
