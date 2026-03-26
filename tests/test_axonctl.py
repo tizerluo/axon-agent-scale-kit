@@ -1,3 +1,5 @@
+import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -746,6 +748,121 @@ class AxonCtlRegressionTests(unittest.TestCase):
         state["agents"]["agent-002"] = {"registered": True, "staked": True, "service_active": True, "last_heartbeat_block": 100, "last_challenge_result": "failed"}
         axonctl.save_state(str(self.state_file), state)
         self.assertEqual(axonctl.lifecycle_report(str(self.state_file), str(self.network_file), None), 0)
+
+    @mock.patch("axonctl._query_agent_onchain")
+    def test_registration_audit_targets_agent_over_request(self, query_mock: mock.Mock) -> None:
+        state = axonctl.load_state(str(self.state_file))
+        state["requests"]["r1"] = {"scale_plan": {"agents": ["agent-001", "agent-002"]}}
+        state["agents"]["agent-001"] = {"wallet_address": "0x1111111111111111111111111111111111111111", "registered": True, "staked": True}
+        state["agents"]["agent-002"] = {"wallet_address": "0x2222222222222222222222222222222222222222", "registered": True, "staked": True}
+        state["agents"]["agent-003"] = {
+            "wallet_address": "0x3333333333333333333333333333333333333333",
+            "registered": True,
+            "staked": True,
+            "registration": {"method": axonctl.REGISTER_METHOD_SIGNATURE, "to": axonctl.REGISTRY_PRECOMPILE, "receipt_status": 1},
+        }
+        axonctl.save_state(str(self.state_file), state)
+        query_mock.return_value = (
+            True,
+            {
+                "is_agent": True,
+                "agent_id": "agent-x",
+                "reputation": 5,
+                "is_online": True,
+                "burned_at_register": {"denom": "aaxon", "amount": "20000000000000000000"},
+            },
+        )
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            self.assertEqual(
+                axonctl.registration_audit(
+                    state_file=str(self.state_file),
+                    network=str(self.network_file),
+                    request_id="r1",
+                    agent_names=["agent-003"],
+                    strict=False,
+                ),
+                0,
+            )
+            payload = json.loads(out.getvalue())
+        self.assertEqual(payload["target_count"], 1)
+        self.assertEqual(payload["items"][0]["agent"], "agent-003")
+        self.assertEqual(query_mock.call_count, 1)
+
+    @mock.patch("axonctl._query_agent_onchain")
+    def test_registration_audit_strict_fails_for_unregistered_and_query_error(self, query_mock: mock.Mock) -> None:
+        state = axonctl.load_state(str(self.state_file))
+        state["agents"]["agent-001"] = {"wallet_address": "0x1111111111111111111111111111111111111111", "registered": False, "staked": False}
+        state["agents"]["agent-002"] = {"wallet_address": "0x2222222222222222222222222222222222222222", "registered": True, "staked": True}
+        axonctl.save_state(str(self.state_file), state)
+        query_mock.side_effect = [
+            (True, {"is_agent": False, "agent_id": "", "reputation": 0, "is_online": False, "burned_at_register": {}}),
+            (False, {"error": "rpc not connected"}),
+        ]
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            self.assertEqual(
+                axonctl.registration_audit(
+                    state_file=str(self.state_file),
+                    network=str(self.network_file),
+                    request_id=None,
+                    agent_names=["agent-001", "agent-002"],
+                    strict=True,
+                ),
+                1,
+            )
+            payload = json.loads(out.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["summary"]["query_failed_count"], 1)
+        self.assertEqual(payload["summary"]["unregistered_onchain_count"], 1)
+        self.assertEqual(payload["items"][0]["classification"], "unregistered_onchain")
+        self.assertIn("query_error", payload["items"][1])
+
+    @mock.patch("axonctl._query_agent_onchain")
+    @mock.patch("axonctl.get_current_block", return_value=1000)
+    def test_lifecycle_report_includes_registration_evidence_fields(self, _block_mock: mock.Mock, query_mock: mock.Mock) -> None:
+        state = axonctl.load_state(str(self.state_file))
+        state["agents"]["agent-001"] = {
+            "wallet_address": "0x1111111111111111111111111111111111111111",
+            "registered": True,
+            "staked": True,
+            "service_active": True,
+            "last_heartbeat_block": 995,
+            "last_challenge_result": "success",
+            "registration": {"method": axonctl.REGISTER_METHOD_SIGNATURE, "to": axonctl.REGISTRY_PRECOMPILE, "receipt_status": 1},
+        }
+        state["agents"]["agent-002"] = {
+            "wallet_address": "0x2222222222222222222222222222222222222222",
+            "registered": True,
+            "staked": True,
+            "service_active": True,
+            "last_heartbeat_block": 995,
+            "last_challenge_result": "success",
+            "registration": {},
+        }
+        axonctl.save_state(str(self.state_file), state)
+        query_mock.side_effect = [
+            (
+                True,
+                {
+                    "is_agent": True,
+                    "agent_id": "agent-a",
+                    "reputation": 4,
+                    "is_online": True,
+                    "burned_at_register": {"denom": "aaxon", "amount": "20000000000000000000"},
+                },
+            ),
+            (True, {"is_agent": True, "agent_id": "agent-b", "reputation": 4, "is_online": False, "burned_at_register": {}}),
+        ]
+        with mock.patch("sys.stdout", new_callable=io.StringIO) as out:
+            self.assertEqual(axonctl.lifecycle_report(str(self.state_file), str(self.network_file), None), 0)
+            payload = json.loads(out.getvalue())
+        self.assertIn("registration_path_counts", payload["summary"])
+        self.assertIn("burn_evidence_counts", payload["summary"])
+        self.assertEqual(payload["summary"]["registration_path_counts"]["precompile_register_payable"], 1)
+        self.assertEqual(payload["summary"]["registration_path_counts"]["legacy_or_unknown"], 1)
+        self.assertEqual(payload["summary"]["burn_evidence_counts"]["onchain_burn_field"], 1)
+        self.assertEqual(payload["summary"]["burn_evidence_counts"]["none"], 1)
+        self.assertIn("registration_path", payload["items"][0])
+        self.assertIn("burn_evidence_level", payload["items"][0])
 
     @mock.patch("axonctl.challenge_run_once", return_value=0)
     @mock.patch("axonctl.heartbeat_once", return_value=0)

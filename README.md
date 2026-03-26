@@ -92,6 +92,44 @@ as `registration.*`:
 - `burn_expected_axon=20`
 - `evidence_mode=register_payable_path_proof`
 
+## Registration Audit (Read-Only)
+
+Use `registration-audit` to cross-check local state and on-chain registration
+status without sending any transaction.
+
+```bash
+# explicit agent list (highest priority)
+python scripts/axonctl.py registration-audit \
+  --state-file state/deploy_state.json \
+  --network configs/network.yaml \
+  --agent agent-001 --agent agent-002
+
+# by request plan
+python scripts/axonctl.py registration-audit \
+  --state-file state/deploy_state.json \
+  --network configs/network.yaml \
+  --request-id <request_id>
+
+# strict mode: non-zero exit when unregistered_onchain or query errors exist
+python scripts/axonctl.py registration-audit \
+  --state-file state/deploy_state.json \
+  --network configs/network.yaml \
+  --agent agent-001 --agent agent-002 \
+  --strict
+```
+
+Per-agent output fields include:
+- `local.registered/staked`
+- `onchain.is_agent/agent_id/reputation/is_online`
+- `registration_path` (`precompile_register_payable | legacy_or_unknown | not_registered`)
+- `burn_evidence_level` (`onchain_burn_field | receipt_only | none`)
+- `classification` and `recommended_action`
+
+`lifecycle-report` also includes `registration_path` and `burn_evidence_level`
+for each agent, plus summary counters:
+- `summary.registration_path_counts`
+- `summary.burn_evidence_counts`
+
 ## Step 0 Initialization
 
 ```bash

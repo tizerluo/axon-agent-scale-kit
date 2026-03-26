@@ -399,6 +399,133 @@ def _post_check_payload(is_agent: bool, agent_info: tuple | None) -> dict:
     }
 
 
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _parse_bech32_from_axond_debug(stdout: str) -> str:
+    for raw in (stdout or "").splitlines():
+        line = raw.strip()
+        if line.startswith("Bech32 Acc:"):
+            return line.split(":", 1)[1].strip()
+        if line.startswith("Bech32 Acc "):
+            return line.split(" ", 2)[-1].strip()
+    return ""
+
+
+def _query_cosmos_agent_record(wallet_address: str) -> dict | None:
+    if not _which("axond"):
+        return None
+    try:
+        conv = subprocess.run(["axond", "debug", "addr", wallet_address], text=True, capture_output=True, timeout=15)
+        if conv.returncode != 0:
+            return None
+        bech32 = _parse_bech32_from_axond_debug(conv.stdout)
+        if not bech32:
+            return None
+        query = subprocess.run(["axond", "query", "agent", "agent", bech32, "-o", "json"], text=True, capture_output=True, timeout=20)
+        if query.returncode != 0:
+            return None
+        data = json.loads(query.stdout or "{}")
+        agent = data.get("agent", {})
+        if not isinstance(agent, dict):
+            return None
+        return agent
+    except Exception:
+        return None
+
+
+def _query_agent_onchain(network_cfg: dict, wallet_address: str) -> tuple[bool, dict]:
+    if not is_valid_evm_address(wallet_address):
+        return False, {"error": "invalid wallet_address"}
+    rpc_url = str(network_cfg.get("rpc_url", "")).strip()
+    if not rpc_url:
+        return False, {"error": "rpc_url is required"}
+    try:
+        from web3 import Web3
+    except Exception as e:
+        return False, {"error": f"missing web3 dependency: {e}"}
+    w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 20, "proxies": {"http": None, "https": None}}))
+    if not w3.is_connected():
+        return False, {"error": "rpc not connected"}
+    contract = w3.eth.contract(address=Web3.to_checksum_address(REGISTRY_PRECOMPILE), abi=REGISTER_ABI)
+    try:
+        is_agent = bool(contract.functions.isAgent(wallet_address).call())
+        info = contract.functions.getAgent(wallet_address).call() if is_agent else ("", [], "", 0, False)
+    except Exception as e:
+        return False, {"error": f"onchain query failed: {e}"}
+    payload = {
+        "is_agent": bool(is_agent),
+        "agent_id": str(info[0]) if is_agent else "",
+        "reputation": _safe_int(info[3], 0) if is_agent else 0,
+        "is_online": bool(info[4]) if is_agent else False,
+        "burned_at_register": {},
+        "status": "",
+        "last_heartbeat": None,
+    }
+    cosmos_agent = _query_cosmos_agent_record(wallet_address)
+    if cosmos_agent:
+        burned = cosmos_agent.get("burned_at_register", {})
+        payload["burned_at_register"] = burned if isinstance(burned, dict) else {}
+        payload["status"] = str(cosmos_agent.get("status", ""))
+        payload["last_heartbeat"] = cosmos_agent.get("last_heartbeat")
+    return True, payload
+
+
+def _has_positive_burn_amount(burned: dict | None) -> bool:
+    if not isinstance(burned, dict):
+        return False
+    return _safe_int(burned.get("amount"), 0) > 0
+
+
+def _registration_path(agent_item: dict, onchain_is_agent: bool | None) -> str:
+    if onchain_is_agent is False:
+        return "not_registered"
+    registration = agent_item.get("registration", {})
+    if isinstance(registration, dict):
+        method = str(registration.get("method", ""))
+        to_addr = str(registration.get("to", "")).lower()
+        if method == REGISTER_METHOD_SIGNATURE and to_addr == REGISTRY_PRECOMPILE.lower():
+            return "precompile_register_payable"
+    if onchain_is_agent is True:
+        return "legacy_or_unknown"
+    if not bool(agent_item.get("registered")):
+        return "not_registered"
+    return "legacy_or_unknown"
+
+
+def _burn_evidence_level(agent_item: dict, burned_at_register: dict | None) -> str:
+    if _has_positive_burn_amount(burned_at_register):
+        return "onchain_burn_field"
+    registration = agent_item.get("registration", {})
+    if isinstance(registration, dict) and _safe_int(registration.get("receipt_status"), 0) == 1:
+        return "receipt_only"
+    return "none"
+
+
+def _registration_classification(is_agent: bool, reputation: int, is_online: bool) -> str:
+    if not is_agent:
+        return "unregistered_onchain"
+    if int(reputation) <= 0:
+        return "registered_rep_zero"
+    if is_online:
+        return "registered_online_rep_positive"
+    return "registered_offline_or_degraded"
+
+
+def _recommended_action_for_classification(classification: str) -> str:
+    if classification == "unregistered_onchain":
+        return "run_register_onchain_once"
+    if classification == "registered_rep_zero":
+        return "keep_heartbeat_and_observe_epoch"
+    if classification == "registered_online_rep_positive":
+        return "none"
+    return "run_lifecycle_repair_then_recheck"
+
+
 def _register_agent_onchain(
     network_cfg: dict,
     wallet: dict,
@@ -1749,6 +1876,123 @@ def execute_scale(state_file: str, network: str, agents: str, request_id: str, f
     return 0
 
 
+def registration_audit(state_file: str, network: str, request_id: str | None, agent_names: list[str], strict: bool) -> int:
+    state = load_state(state_file)
+    network_cfg = load_yaml(network)
+    targets = []
+    if agent_names:
+        seen = set()
+        for name in agent_names:
+            n = str(name).strip()
+            if not n or n in seen:
+                continue
+            seen.add(n)
+            targets.append(n)
+    elif request_id:
+        req = state.get("requests", {}).get(request_id)
+        if not req:
+            print(json.dumps({"ok": False, "error": "request not found"}, ensure_ascii=False, indent=2))
+            return 1
+        targets = [str(x) for x in req.get("scale_plan", {}).get("agents", []) if str(x)]
+    else:
+        targets = sorted(state.get("agents", {}).keys())
+    if not targets:
+        print(json.dumps({"ok": False, "error": "no agents for registration-audit"}, ensure_ascii=False, indent=2))
+        return 1
+
+    classification_counts = {
+        "unregistered_onchain": 0,
+        "registered_rep_zero": 0,
+        "registered_online_rep_positive": 0,
+        "registered_offline_or_degraded": 0,
+    }
+    registration_path_counts = {"precompile_register_payable": 0, "legacy_or_unknown": 0, "not_registered": 0}
+    burn_evidence_counts = {"onchain_burn_field": 0, "receipt_only": 0, "none": 0}
+
+    items = []
+    query_failed_count = 0
+    unregistered_onchain_count = 0
+    for name in targets:
+        agent_item = state.get("agents", {}).get(name, {})
+        wallet_address = str(agent_item.get("wallet_address", ""))
+        local_info = {"registered": bool(agent_item.get("registered")), "staked": bool(agent_item.get("staked"))}
+        onchain_info = {"is_agent": False, "agent_id": "", "reputation": 0, "is_online": False}
+        query_error = ""
+        burned_at_register = {}
+        if not wallet_address:
+            query_error = "wallet_address missing"
+        elif not is_valid_evm_address(wallet_address):
+            query_error = "wallet_address invalid"
+        else:
+            ok, result = _query_agent_onchain(network_cfg, wallet_address)
+            if not ok:
+                query_error = result.get("error", "onchain query failed")
+            else:
+                onchain_info = {
+                    "is_agent": bool(result.get("is_agent")),
+                    "agent_id": str(result.get("agent_id", "")),
+                    "reputation": _safe_int(result.get("reputation"), 0),
+                    "is_online": bool(result.get("is_online")),
+                }
+                burned_at_register = result.get("burned_at_register", {}) if isinstance(result.get("burned_at_register"), dict) else {}
+                if burned_at_register:
+                    onchain_info["burned_at_register"] = burned_at_register
+                if result.get("status"):
+                    onchain_info["status"] = result.get("status")
+                if result.get("last_heartbeat") is not None:
+                    onchain_info["last_heartbeat"] = result.get("last_heartbeat")
+
+        if query_error:
+            query_failed_count += 1
+            classification = "registered_offline_or_degraded" if local_info["registered"] else "unregistered_onchain"
+            recommended_action = "check_rpc_or_wallet_then_rerun_audit"
+            registration_path = _registration_path(agent_item, None)
+            burn_level = _burn_evidence_level(agent_item, None)
+        else:
+            classification = _registration_classification(onchain_info["is_agent"], onchain_info["reputation"], onchain_info["is_online"])
+            recommended_action = _recommended_action_for_classification(classification)
+            registration_path = _registration_path(agent_item, onchain_info["is_agent"])
+            burn_level = _burn_evidence_level(agent_item, burned_at_register)
+
+        classification_counts[classification] += 1
+        registration_path_counts[registration_path] += 1
+        burn_evidence_counts[burn_level] += 1
+        if classification == "unregistered_onchain":
+            unregistered_onchain_count += 1
+
+        row = {
+            "agent": name,
+            "wallet_address": wallet_address,
+            "local": local_info,
+            "onchain": onchain_info,
+            "registration_path": registration_path,
+            "burn_evidence_level": burn_level,
+            "classification": classification,
+            "recommended_action": recommended_action,
+        }
+        if query_error:
+            row["query_error"] = query_error
+        items.append(row)
+
+    ok = not (strict and (unregistered_onchain_count > 0 or query_failed_count > 0))
+    output = {
+        "ok": ok,
+        "strict": bool(strict),
+        "request_id": request_id,
+        "target_count": len(targets),
+        "summary": {
+            "classification_counts": classification_counts,
+            "registration_path_counts": registration_path_counts,
+            "burn_evidence_counts": burn_evidence_counts,
+            "query_failed_count": query_failed_count,
+            "unregistered_onchain_count": unregistered_onchain_count,
+        },
+        "items": items,
+    }
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0 if ok else 1
+
+
 def remote_deploy(state_file: str, request_id: str, hosts_file: str, host_name: str, network: str, agents: str, dry_run: bool) -> int:
     state = load_state(state_file)
     req = state["requests"].get(request_id)
@@ -1927,10 +2171,31 @@ def lifecycle_report(state_file: str, network: str, request_id: str | None) -> i
         current_block = get_current_block(network_cfg.get("rpc_url", ""))
     except Exception:
         current_block = None
-    items = [evaluate_agent_health(name, state.get("agents", {}).get(name, {}), network_cfg, current_block) for name in names]
+    items = []
     summary = {"HEALTHY": 0, "DEGRADED": 0, "FAILED": 0}
-    for it in items:
+    registration_path_counts = {"precompile_register_payable": 0, "legacy_or_unknown": 0, "not_registered": 0}
+    burn_evidence_counts = {"onchain_burn_field": 0, "receipt_only": 0, "none": 0}
+    for name in names:
+        agent_item = state.get("agents", {}).get(name, {})
+        it = evaluate_agent_health(name, agent_item, network_cfg, current_block)
+        onchain_hint = None
+        burned_at_register = None
+        wallet_address = str(agent_item.get("wallet_address", ""))
+        if wallet_address and is_valid_evm_address(wallet_address):
+            ok, onchain_result = _query_agent_onchain(network_cfg, wallet_address)
+            if ok:
+                onchain_hint = bool(onchain_result.get("is_agent"))
+                burned_at_register = onchain_result.get("burned_at_register")
+        registration_path = _registration_path(agent_item, onchain_hint)
+        burn_level = _burn_evidence_level(agent_item, burned_at_register)
+        it["registration_path"] = registration_path
+        it["burn_evidence_level"] = burn_level
         summary[it["health"]] += 1
+        registration_path_counts[registration_path] += 1
+        burn_evidence_counts[burn_level] += 1
+        items.append(it)
+    summary["registration_path_counts"] = registration_path_counts
+    summary["burn_evidence_counts"] = burn_evidence_counts
     output = {"ok": True, "request_id": request_id, "current_block": current_block, "summary": summary, "items": items}
     state["events"].append({"ts": now_ts(), "type": "lifecycle_report", "request_id": request_id, "summary": summary})
     save_state(state_file, state)
@@ -2288,6 +2553,13 @@ def main() -> int:
     p_register_onchain_batch.add_argument("--model", default=DEFAULT_REGISTER_MODEL)
     p_register_onchain_batch.add_argument("--dry-run", action="store_true")
 
+    p_registration_audit = sub.add_parser("registration-audit")
+    p_registration_audit.add_argument("--state-file", default="state/deploy_state.json")
+    p_registration_audit.add_argument("--network", required=True)
+    p_registration_audit.add_argument("--request-id")
+    p_registration_audit.add_argument("--agent", action="append", default=[])
+    p_registration_audit.add_argument("--strict", action="store_true")
+
     p_status = sub.add_parser("status")
     p_status.add_argument("--state-file", default="state/deploy_state.json")
     p_status.add_argument("--request-id", required=True)
@@ -2434,6 +2706,8 @@ def main() -> int:
             capabilities=args.capabilities,
             model=args.model,
         )
+    if args.cmd == "registration-audit":
+        return registration_audit(args.state_file, args.network, args.request_id, args.agent, args.strict)
     if args.cmd == "status":
         return status(args.state_file, args.request_id)
     if args.cmd == "repair":
