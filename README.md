@@ -2,6 +2,8 @@
 
 Scale, operate, and secure AXON Agents with one CLI-first workflow.
 
+> **For contributors and AI agents:** Start at [`docs/DEVELOPER_REFERENCE.md`](docs/DEVELOPER_REFERENCE.md) — chain constants, CLI reference, SSH paths, and protocol facts are all there.
+
 Production-oriented automation for funded scaling, remote deployment, heartbeat, AI challenge execution, lifecycle repair, and wallet governance.
 
 ## Capabilities
@@ -18,13 +20,13 @@ Production-oriented automation for funded scaling, remote deployment, heartbeat,
 ## 10-Line Quick Start
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
+python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python scripts/axonctl.py init-step --mode local
 python scripts/axonctl.py wallet-generate --role funding --label "my-funding"
 python scripts/axonctl.py validate --network configs/network.yaml --agents configs/agents.yaml
 python scripts/axonctl.py run-intent --network configs/network.yaml --agents configs/agents.yaml --intent "I fund 250 AXON, scale 2 agents"
-python scripts/axonctl.py remote-deploy --state-file state/deploy_state.json --request-id <request_id> --hosts configs/hosts.yaml --host your-server --network configs/network.yaml --agents configs/agents.yaml
+python scripts/axonctl.py remote-deploy --state-file state/deploy_state.json --request-id <request_id> --hosts configs/runtime/hosts.runtime.yaml --host your-server --network configs/network.yaml --agents configs/agents.yaml
 python scripts/axonctl.py heartbeat-batch --network configs/network.yaml --request-id <request_id>
 python scripts/axonctl.py challenge-batch --network configs/network.yaml --request-id <request_id>
 python scripts/axonctl.py lifecycle-report --network configs/network.yaml --request-id <request_id>
@@ -52,6 +54,31 @@ python scripts/axonctl.py lifecycle-report --network configs/network.yaml --requ
 - Generate scale plans with budget and batch strategy
 - Execute idempotent scaling, status reports and repair actions
 - Generate, list, export and backup all wallet keys (funding + agent wallets)
+
+## Agent Architecture
+
+All agents are managed by the `axon-heartbeat-daemon.service` via `scripts/axonctl.py heartbeat-daemon`.
+The daemon automatically traverses all agent entries in `state/deploy_state.json` — no per-agent configuration is needed when adding new agents.
+
+**Managed agents:**
+
+| Agent | Address | Notes |
+|-------|---------|-------|
+| agent-001 | 0xF628086296B0fC4dCb8e9B8432Ca0aE89B5BA2F4 | scale-kit managed |
+| agent-002 | 0xCCEa383facB2be40F4776E4B0935c4Fb3fa57C3D | scale-kit managed |
+| agent-003 | 0x596b90a3d5Df86B124d3bFbBf01B2FA3CEC0cFB8 | scale-kit managed |
+| agent-004 | 0x8a9f9F5B609D93dB7B64BA2c284ddb1c067F5a11 | scale-kit managed |
+| agent-005 | 0xF4914A80C40E8a4B34502B672728B60C0753574E | scale-kit managed |
+| agent-legacy-006 | 0xEDc2B7e121C4f78104dCAE669CC79E66FFEF9B50 | scale-kit managed |
+| agent-legacy-007 | 0x71f3a07B95dBB283c19A7f37dc93fE50134D7250 | scale-kit managed |
+| agent-legacy-008 | 0x98E33ba59e36453b5910F683040b9BE16280a2F3 | scale-kit managed |
+| agent-009 | 0x7B4A3F8d501FDD31A9dC4Bc8dbE312121D276b57 | scale-kit managed |
+| qqclaw-validator | 0xA98dC2a1E964ED8fB96539045C7dab75C3Ddd34f | validator, migrated from standalone daemon |
+
+**AI Challenge participation** is handled via the heartbeat daemon's normal heartbeat
+(~500 s interval, HeartbeatInterval = 100 blocks), which triggers `IncrementEpochActivity()` on-chain.
+The standalone `axon-agent-qqclaw.service` has been retired (disabled 2026-03-27);
+qqclaw-validator has no Docker container — heartbeat is sent directly via RPC by heartbeat-daemon.
 
 ## On-Chain Register (payable)
 
@@ -137,7 +164,7 @@ for each agent, plus summary counters:
 python scripts/axonctl.py init-step --mode local
 
 # server dependency check/install (docker + directories)
-python scripts/axonctl.py init-step --mode server --hosts configs/hosts.yaml --host your-server
+python scripts/axonctl.py init-step --mode server --hosts configs/runtime/hosts.runtime.yaml --host your-server
 ```
 
 ## One-Command Release (Push -> Deploy -> Restart -> Verify)
@@ -210,8 +237,11 @@ Imported agents are attached as `label=agent:<name>` and become manageable by he
 
 ## Quick Start
 
+> **Requires Python >= 3.10** (3.9 is incompatible — the codebase uses `int | None` union-type syntax).
+> If `python3.11` is not found: **macOS**: `brew install python@3.11` then use `python3.11`; **Linux**: `sudo apt install python3.11-venv` or check your distribution's package.
+
 ```bash
-python3 -m venv .venv
+python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
@@ -234,7 +264,7 @@ python scripts/axonctl.py run-intent \
 python scripts/axonctl.py remote-deploy \
   --state-file state/deploy_state.json \
   --request-id <request_id> \
-  --hosts configs/hosts.yaml \
+  --hosts configs/runtime/hosts.runtime.yaml \
   --host your-server \
   --network configs/network.yaml \
   --agents configs/agents.yaml
@@ -243,7 +273,7 @@ python scripts/axonctl.py remote-deploy \
 python scripts/axonctl.py remote-status \
   --state-file state/deploy_state.json \
   --request-id <request_id> \
-  --hosts configs/hosts.yaml \
+  --hosts configs/runtime/hosts.runtime.yaml \
   --host your-server
 
 # 6. export and backup all agent wallet keys
@@ -262,24 +292,8 @@ python scripts/axonctl.py lifecycle-repair --network configs/network.yaml --requ
 
 ## Remote Host Config
 
-`configs/hosts.yaml` defines real deployment target hosts for SSH/SCP + Docker:
-
-```yaml
-hosts:
-  - name: "your-server"
-    deployment_mode: "server"
-    host: "YOUR_SERVER_IP"
-    user: "YOUR_SSH_USER"
-    os_type: "linux"
-    os_version: "YOUR_OS_VERSION"
-    ssh_key: "/path/to/your/private-key.pem"
-    workdir: "/home/YOUR_SSH_USER/axon-agent-scale"
-    python_bin: "python3"
-    use_sudo: true
-    docker:
-      expected_engine: "docker"
-      expected_compose: "docker compose"
-```
+See `configs/runtime/hosts.runtime.template.yaml` for the schema.
+Copy it to `configs/runtime/hosts.runtime.yaml` (gitignored) and fill in real values.
 
 ## Runtime Private Config Layer
 

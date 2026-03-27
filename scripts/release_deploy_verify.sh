@@ -10,8 +10,8 @@ Options:
   --remote-host <host>       Remote host (default: 43.165.195.71)
   --remote-user <user>       Remote user (default: ubuntu)
   --ssh-key <path>           SSH private key path
-                             (default: /Users/mac-mini/AXON-Chain/server/config/QQClaw.pem)
-  --remote-dir <path>        Remote workdir (default: /home/ubuntu/axon-agent-scale)
+                             (default: ${HOME}/Downloads/QQClaw.pem)
+  --remote-dir <path>         Remote workdir (default: /home/ubuntu/axon-agent-scale)
   --service <name>           systemd service to restart/verify
                              (default: axon-heartbeat-daemon.service)
   --skip-tests               Skip local unittest before push
@@ -36,7 +36,7 @@ die() {
 
 REMOTE_HOST="43.165.195.71"
 REMOTE_USER="ubuntu"
-SSH_KEY="/Users/mac-mini/AXON-Chain/server/config/QQClaw.pem"
+SSH_KEY="${HOME}/Downloads/QQClaw.pem"
 REMOTE_DIR="/home/ubuntu/axon-agent-scale"
 SERVICE_NAME="axon-heartbeat-daemon.service"
 SKIP_TESTS=0
@@ -119,14 +119,11 @@ LOCAL_SHORT="$(git rev-parse --short HEAD)"
 log "local branch: $LOCAL_BRANCH"
 log "local commit: $LOCAL_COMMIT"
 
-log "fetching origin/main"
-git fetch origin main
-
-read -r ahead_count behind_count <<<"$(git rev-list --left-right --count HEAD...origin/main)"
-
-if [[ "$behind_count" != "0" ]]; then
-  die "local branch is behind origin/main by $behind_count commit(s); rebase/merge first"
+if [[ "$LOCAL_BRANCH" == "main" ]]; then
+  die "pushing directly to main is forbidden; all changes must go through a PR reviewed by 6tizer"
 fi
+
+log "pushing HEAD to origin/$LOCAL_BRANCH"
 
 if [[ "$SKIP_TESTS" -ne 1 ]]; then
   log "running local regression: python3 -m unittest tests.test_axonctl -q"
@@ -136,15 +133,15 @@ else
 fi
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  log "DRY RUN: would push HEAD to origin/main"
+  log "DRY RUN: would push HEAD to origin/$LOCAL_BRANCH"
 else
-  log "pushing HEAD to origin/main"
-  git push origin HEAD:main
+  log "pushing HEAD to origin/$LOCAL_BRANCH"
+  git push origin HEAD
 fi
 
-remote_main="$(git ls-remote --heads origin main | awk '{print $1}')"
-if [[ "$remote_main" != "$LOCAL_COMMIT" ]]; then
-  die "origin/main ($remote_main) does not match local commit ($LOCAL_COMMIT)"
+remote_head="$(git ls-remote --heads origin "$LOCAL_BRANCH" | awk '{print $1}')"
+if [[ "$remote_head" != "$LOCAL_COMMIT" ]]; then
+  die "origin/$LOCAL_BRANCH ($remote_head) does not match local commit ($LOCAL_COMMIT)"
 fi
 
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new -i "$SSH_KEY")

@@ -21,8 +21,19 @@ challenge:
   ai_challenge_window_blocks: 50
   bank_source_url: "https://raw.githubusercontent.com/axon-chain/axon/main/x/agent/keeper/challenge.go"
   answer_bank_file: "configs/challenge_answers.yaml"
+  # execution_mode:
+  #   "simulate"  — default. commit/reveal tx are constructed but NOT signed or submitted.
+  #                 Safe for testing. State is written to deploy_state.json but no on-chain effect.
+  #   "command"   — signs and submits real commit/reveal transactions.
+  #                 Requires: openrouter.api_base + model_id configured, OR command.submit_template set.
+  #                 WARNING: real mode submits on-chain transactions; always run with --dry-run first.
   execution_mode: "simulate"
   openrouter:
+    # Required for execution_mode="command" with LLM:
+    #   api_base:  "https://openrouter.ai/api/v1/chat/completions"
+    #   model_id:  "anthropic/claude-3-haiku"   # or any supported model
+    # If model_id is empty and execution_mode is "command", agent will fall back
+    # to the hardcoded answer bank (configs/challenge_answers.yaml).
     api_base: "https://openrouter.ai/api/v1/chat/completions"
     model_id: ""
     fallback_models: []

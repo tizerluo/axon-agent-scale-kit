@@ -122,6 +122,7 @@ class AxonCtlRegressionTests(unittest.TestCase):
         )
         state = axonctl.load_state(str(self.state_file))
         self.assertEqual(state["agents"]["agent-legacy-001"]["wallet_address"], addr)
+        self.assertEqual(state["agents"]["agent-legacy-001"]["container_name"], "axon-agent-agent-legacy-001")
         found = [w for w in state["wallets"].values() if w.get("label") == "agent:agent-legacy-001"]
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0]["address"], addr)
@@ -151,6 +152,40 @@ class AxonCtlRegressionTests(unittest.TestCase):
         state = axonctl.load_state(str(self.state_file))
         self.assertEqual(state["agents"]["agent-legacy-002"]["wallet_address"], addr1)
         self.assertEqual(state["agents"]["agent-legacy-003"]["wallet_address"], addr2)
+        self.assertEqual(state["agents"]["agent-legacy-002"]["container_name"], "axon-agent-agent-legacy-002")
+        self.assertEqual(state["agents"]["agent-legacy-003"]["container_name"], "axon-agent-agent-legacy-003")
+
+    def test_agent_wallet_import_reused_sets_container_name(self) -> None:
+        from eth_account import Account
+
+        pk = "1" * 64
+        addr = Account.from_key(f"0x{pk}").address
+        self.assertEqual(
+            axonctl.agent_wallet_import(
+                state_file=str(self.state_file),
+                agent_name="agent-001",
+                private_key=pk,
+                address=addr,
+                mnemonic="",
+                overwrite=False,
+            ),
+            0,
+        )
+        state = axonctl.load_state(str(self.state_file))
+        self.assertEqual(state["agents"]["agent-001"]["container_name"], "axon-agent-agent-001")
+        self.assertEqual(
+            axonctl.agent_wallet_import(
+                state_file=str(self.state_file),
+                agent_name="agent-001",
+                private_key=pk,
+                address=addr,
+                mnemonic="",
+                overwrite=True,
+            ),
+            0,
+        )
+        state2 = axonctl.load_state(str(self.state_file))
+        self.assertEqual(state2["agents"]["agent-001"]["container_name"], "axon-agent-agent-001")
 
     def test_request_create_rejects_insufficient_min_funding(self) -> None:
         code = axonctl.create_request(

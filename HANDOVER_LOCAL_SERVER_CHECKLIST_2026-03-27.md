@@ -2,16 +2,16 @@
 
 ## 1. 项目与版本基线
 
-- 基线更新时间：`2026-03-25 18:23 CST`
-- 本地仓库路径：`/Users/mac-mini/Documents/Codex/axon-agent-scale-kit`
-- 当前分支：`main`
-- 当前提交：`abcdea3`
-- 远端同步状态：`HEAD == origin/main`
+- 基线更新时间：`2026-03-27 CST`
+- 本地仓库路径：`/Users/tizerluo/Cursor2026/AXON/axon-agent-scale-kit`
+- 当前分支：`docs/collaboration-workflow`
+- 当前提交：`cfadb3e`
+- 远端同步状态：`docs/collaboration-workflow 领先 origin/main (d88c68d) 4 个 commit；PR #2 (docs/collaboration-workflow) 待 6tizer review`
 - 关键状态文件：`state/deploy_state.json`
 - 关键配置文件：
   - `configs/network.yaml`
   - `configs/agents.yaml`
-  - `configs/hosts.yaml`
+  - `configs/runtime/hosts.runtime.yaml`（gitignored，不入仓库）
 
 ## 2. 服务器与登录信息
 
@@ -19,12 +19,12 @@
 - 公网 IP：`43.165.195.71`
 - 用户：`ubuntu`
 - 系统：`Ubuntu Server 24.04 LTS 64bit`
-- 本地 SSH 私钥路径：`/Users/mac-mini/AXON-Chain/server/config/QQClaw.pem`
+- 本地 SSH 私钥路径：`/Users/tizerluo/Downloads/QQClaw.pem`
 - 连接命令：
-  - `ssh -i /Users/mac-mini/AXON-Chain/server/config/QQClaw.pem ubuntu@43.165.195.71`
+  - `ssh -i /Users/tizerluo/Downloads/QQClaw.pem ubuntu@43.165.195.71`
 
 - 主机映射文件（本地）：
-  - `configs/hosts.yaml`
+  - `configs/runtime/hosts.runtime.yaml`
 
 ## 3. 线上运行目录（Agent 相关）
 
@@ -40,33 +40,35 @@
 
 - `axon-heartbeat-daemon.service`
   - 状态：active
-  - 作用：8 个 Agent 的链上 heartbeat 常驻守护
+  - 作用：9 个 Agent 的链上 heartbeat 常驻守护
   - 服务文件：`/etc/systemd/system/axon-heartbeat-daemon.service`
   - ExecStart：
     - `/usr/bin/python3 /home/ubuntu/axon-agent-scale/scripts/axonctl.py heartbeat-daemon --state-file /home/ubuntu/axon-agent-scale/state/deploy_state.json --network /home/ubuntu/axon-agent-scale/configs/network.yaml --interval-sec 60`
 
 - `axon-agent-qqclaw.service`
-  - 状态：active
-  - 作用：验证者侧 QQClaw Agent 守护（独立于 scale-kit）
-  - 服务文件：`/etc/systemd/system/axon-agent-qqclaw.service`
-  - 执行脚本：`/opt/axon-node/scripts/agent_daemon.py`
+  - 状态：inactive (disabled, migrated 2026-03-27)
+  - 作用：已迁徙——qqclaw-validator 私钥已导入 scale-kit，由 heartbeat-daemon 统一管理
+  - 归档文件：`/opt/axon-node/scripts/agent_daemon.py.bak`（服务器上保留备份）
 
 ## 5. 当前线上容器（docker）
 
-- 8 个 Agent 容器（image: `python:3.11-slim`）：
+- 9 个 Agent 容器（image: `python:3.11-slim`）：
   - `axon-agent-agent-001`
   - `axon-agent-agent-002`
   - `axon-agent-agent-003`
   - `axon-agent-agent-004`
   - `axon-agent-agent-005`
+  - `axon-agent-agent-009`
   - `axon-agent-agent-legacy-006`
   - `axon-agent-agent-legacy-007`
   - `axon-agent-agent-legacy-008`
 
+> 注意：qqclaw-validator 无独立 Docker 容器——它的 agent daemon 已停用，由 heartbeat-daemon 通过 RPC 直接管理链上心跳。
+
 - 另有节点容器：
   - `axon-node`（image: `debian:trixie-slim`）
 
-## 6. Agent 清单（当前纳管 8 个）
+## 6. Agent 清单（当前纳管 10 个）
 
 - `agent-001`：`0xF628086296B0fC4dCb8e9B8432Ca0aE89B5BA2F4`
 - `agent-002`：`0xCCEa383facB2be40F4776E4B0935c4Fb3fa57C3D`
@@ -76,10 +78,12 @@
 - `agent-legacy-006`：`0xEDc2B7e121C4f78104dCAE669CC79E66FFEF9B50`
 - `agent-legacy-007`：`0x71f3a07B95dBB283c19A7f37dc93fE50134D7250`
 - `agent-legacy-008`：`0x98E33ba59e36453b5910F683040b9BE16280a2F3`
+- `agent-009`：`0x7B4A3F8d501FDD31A9dC4Bc8dbE312121D276b57`
+- `qqclaw-validator`：`0xA98dC2a1E964ED8fB96539045C7dab75C3Ddd34f`
 
 说明：
-- 链上实时核验结果：`online_count = 8/8`
-- `state/deploy_state.json` 中记录了最近 heartbeat 交易哈希与区块高度
+- 链上实时核验结果：`online_count = 10/10`（2026-03-27 验证）
+- qqclaw-validator 无 Docker 容器，由 heartbeat-daemon 直接发 RPC 心跳
 
 ## 7. 与 Agent 运行最相关的代码入口
 
@@ -97,28 +101,28 @@
 
 ## 8. 关键非通用化信息（后续任务必须带上）
 
-- SSH 私钥本地路径：`/Users/mac-mini/AXON-Chain/server/config/QQClaw.pem`
+- SSH 私钥本地路径：`/Users/tizerluo/Downloads/QQClaw.pem`
 - 运行主机固定为：`43.165.195.71`
 - 运行目录固定为：`/home/ubuntu/axon-agent-scale`
 - 线上状态文件固定为：`/home/ubuntu/axon-agent-scale/state/deploy_state.json`
-- 本地状态文件固定为：`/Users/mac-mini/Documents/Codex/axon-agent-scale-kit/state/deploy_state.json`
+- 本地状态文件固定为：`/Users/tizerluo/Cursor2026/AXON/axon-agent-scale-kit/state/deploy_state.json`
 
 ## 9. 运维常用命令（交接即用）
 
 - 查看心跳守护状态：
-  - `ssh -i /Users/mac-mini/AXON-Chain/server/config/QQClaw.pem ubuntu@43.165.195.71 "systemctl status axon-heartbeat-daemon.service --no-pager"`
+  - `ssh -i /Users/tizerluo/Downloads/QQClaw.pem ubuntu@43.165.195.71 "systemctl status axon-heartbeat-daemon.service --no-pager"`
 
 - 查看心跳守护日志：
-  - `ssh -i /Users/mac-mini/AXON-Chain/server/config/QQClaw.pem ubuntu@43.165.195.71 "journalctl -u axon-heartbeat-daemon.service -n 200 --no-pager"`
+  - `ssh -i /Users/tizerluo/Downloads/QQClaw.pem ubuntu@43.165.195.71 "journalctl -u axon-heartbeat-daemon.service -n 200 --no-pager"`
 
 - 重启心跳守护：
-  - `ssh -i /Users/mac-mini/AXON-Chain/server/config/QQClaw.pem ubuntu@43.165.195.71 "sudo systemctl restart axon-heartbeat-daemon.service"`
+  - `ssh -i /Users/tizerluo/Downloads/QQClaw.pem ubuntu@43.165.195.71 "sudo systemctl restart axon-heartbeat-daemon.service"`
 
 - 查看 Agent 容器：
-  - `ssh -i /Users/mac-mini/AXON-Chain/server/config/QQClaw.pem ubuntu@43.165.195.71 "docker ps --format '{{.Names}}|{{.Status}}|{{.Image}}'"`
+  - `ssh -i /Users/tizerluo/Downloads/QQClaw.pem ubuntu@43.165.195.71 "docker ps --format '{{.Names}}|{{.Status}}|{{.Image}}'"`
 
 - 服务器侧健康快照：
-  - `ssh -i /Users/mac-mini/AXON-Chain/server/config/QQClaw.pem ubuntu@43.165.195.71 "python3 /home/ubuntu/axon-agent-scale/scripts/axonctl.py lifecycle-report --state-file /home/ubuntu/axon-agent-scale/state/deploy_state.json --network /home/ubuntu/axon-agent-scale/configs/network.yaml"`
+  - `ssh -i /Users/tizerluo/Downloads/QQClaw.pem ubuntu@43.165.195.71 "python3 /home/ubuntu/axon-agent-scale/scripts/axonctl.py lifecycle-report --state-file /home/ubuntu/axon-agent-scale/state/deploy_state.json --network /home/ubuntu/axon-agent-scale/configs/network.yaml"`
 
 ## 10. 继续优化时的风险点与建议
 
@@ -134,9 +138,9 @@
 ## 11. 下一任务启动前的最小检查清单
 
 - 确认 `axon-heartbeat-daemon.service` 为 active
-- 确认 `docker ps` 中 8 个 agent 容器都在
+- 确认 `docker ps` 中 9 个 agent 容器都在
 - 跑一遍服务器侧 `lifecycle-report`
-- 抽查链上 `online_count` 是否 8/8
+- 抽查链上 `online_count` 是否 9/9
 - 确认本地与服务器 `axonctl.py` 版本一致（必要时比对 `sha256sum`）
 
 ## 12. 后续开发标准顺序（本地 / 服务器 / GitHub）
@@ -181,18 +185,18 @@
   - 已识别“注册是否需要单独 burn”存在误导风险，后续需要整理证据并向官方 GitHub 反馈。
   - 新任务中如果涉及注册流程说明，必须以官方代码口径优先，不沿用旧说法。
 
-- 并行守护系统说明（避免混淆）  
-  - scale-kit 心跳守护：`axon-heartbeat-daemon.service`（`/home/ubuntu/axon-agent-scale`）
-  - QQClaw 独立守护：`axon-agent-qqclaw.service`（`/opt/axon-node/scripts`）
-  - 两套系统并行存在、职责不同，排障时必须先区分来源后再处理。
+- 并行守护系统说明（已更新：qqclaw daemon 已停用）
+  - scale-kit 心跳守护：`axon-heartbeat-daemon.service`（`/home/ubuntu/axon-agent-scale`）— **唯一**心跳来源
+  - QQClaw 独立守护：`axon-agent-qqclaw.service` — **已停用并 disabled**，qqclaw 私钥已导入 scale-kit
+  - qqclaw-validator 无 Docker 容器，由 heartbeat-daemon 直接通过 RPC 发链上心跳
 
-## 14. 本次只读生产快照（2026-03-25）
+## 14. 本次只读生产快照（2026-03-27）
 
-- 快照时间：`2026-03-25 18:23 CST`
-- 核对结果：`axon-heartbeat-daemon.service=active`，`axon-agent-qqclaw.service=active`
-- Docker 结果：8 个 agent 容器 + 1 个 `axon-node` 容器均在运行
-- 生命周期结果：`HEALTHY=8 / DEGRADED=0 / FAILED=0`
-- 详细记录：`docs/ops/prod_snapshot_2026-03-25.md`
+- 快照时间：`2026-03-27 CST`
+- 核对结果：`axon-heartbeat-daemon.service=active`，`axon-agent-qqclaw.service=inactive (disabled, migrated)`
+- Docker 结果：9 个 agent 容器 + 1 个 `axon-node` 容器均在运行（qqclaw-validator 无容器）
+- 生命周期结果：待 `lifecycle-report` 确认
+- 详细记录：`docs/ops/prod_snapshot_2026-03-25.md`（上次）
 
 ## 15. 统一发布入口（已落地）
 

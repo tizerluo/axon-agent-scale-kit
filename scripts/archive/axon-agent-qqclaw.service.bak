@@ -1,0 +1,26 @@
+# Archived: axon-agent-qqclaw.service
+# Status as of archival: disabled (migrated 2026-03-27)
+# Reason: qqclaw agent migrated to axon-heartbeat-daemon.service (scale-kit unified management)
+# qqclaw-validator (on-chain agent identity) is now maintained by heartbeat-daemon.
+# The qqclaw validator node (axon-node container) continues running independently.
+#
+# Original unit file content:
+
+[Unit]
+Description=Axon Agent QQClaw Daemon
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/axon-node
+Environment="PYTHONPATH=/home/ubuntu/.local/lib/python3.10/site-packages"
+ExecStart=/usr/bin/python3 /opt/axon-node/scripts/agent_daemon.py --rpc http://localhost:8545 --private-key-file /opt/axon-node/data/validator/validator.evm-private-key.txt --heartbeat-interval 100 --log-file /opt/axon-node/logs/agent_qqclaw_daemon.log --log-level info
+Restart=always
+RestartSec=15s
+
+[Install]
+WantedBy=multi-user.target

@@ -1,16 +1,16 @@
 # AXON 生产快照（只读）
 
 - 采集时间（本地）：`2026-03-25 18:23:30 CST`
-- 本地仓库：`/Users/mac-mini/Documents/Codex/axon-agent-scale-kit`
+- 本地仓库：`/Users/tizerluo/Cursor2026/AXON/axon-agent-scale-kit`
 - 本地分支/提交：`main` / `abcdea3`
-- 远端同步：`HEAD == origin/main`
+- 远端同步：`HEAD == upstream/main`
 
 ## 1. 服务器连通与服务状态
 
 命令：
 
 ```bash
-ssh -i /Users/mac-mini/AXON-Chain/server/config/QQClaw.pem ubuntu@43.165.195.71 \
+ssh -i /Users/tizerluo/Downloads/QQClaw.pem ubuntu@43.165.195.71 \
   'date "+%Y-%m-%d %H:%M:%S %Z"; hostname; whoami; \
    systemctl is-active axon-heartbeat-daemon.service; \
    systemctl is-active axon-agent-qqclaw.service'
@@ -31,7 +31,7 @@ active
 命令：
 
 ```bash
-ssh -i /Users/mac-mini/AXON-Chain/server/config/QQClaw.pem ubuntu@43.165.195.71 \
+ssh -i /Users/tizerluo/Downloads/QQClaw.pem ubuntu@43.165.195.71 \
   'docker ps --format "{{.Names}}|{{.Status}}|{{.Image}}" | sort'
 ```
 
@@ -49,12 +49,14 @@ axon-agent-agent-legacy-008|Up 4 hours|python:3.11-slim
 axon-node|Up 6 days|debian:trixie-slim
 ```
 
+> 注意：当时仅纳管 8 个 agent，agent-009 和 qqclaw-validator 尚未加入。
+
 ## 3. Lifecycle 健康报告
 
 命令：
 
 ```bash
-ssh -i /Users/mac-mini/AXON-Chain/server/config/QQClaw.pem ubuntu@43.165.195.71 \
+ssh -i /Users/tizerluo/Downloads/QQClaw.pem ubuntu@43.165.195.71 \
   'python3 /home/ubuntu/axon-agent-scale/scripts/axonctl.py lifecycle-report \
     --state-file /home/ubuntu/axon-agent-scale/state/deploy_state.json \
     --network /home/ubuntu/axon-agent-scale/configs/network.yaml'

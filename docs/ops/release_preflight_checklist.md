@@ -12,7 +12,7 @@
 - `git status` 可解释（无未知脏改动进入发布）。
 - 本地回归通过：`python3 -m unittest tests.test_axonctl -q`。
 - GitHub Actions `unittest` 工作流状态为通过（若本次变更触发了 CI）。
-- 配置已核对：`configs/network.yaml`、`configs/agents.yaml`、`configs/hosts.yaml`（或你的 `configs/runtime/*.yaml` 私有配置）。
+- 配置已核对：`configs/network.yaml`、`configs/agents.yaml`、`configs/runtime/hosts.runtime.yaml`（或你的 `configs/runtime/*.yaml` 私有配置）。
 
 ## 2. 发布动作（固定顺序）
 
