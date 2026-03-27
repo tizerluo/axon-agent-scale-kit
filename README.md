@@ -64,14 +64,21 @@ The daemon automatically traverses all agent entries in `state/deploy_state.json
 
 | Agent | Address | Notes |
 |-------|---------|-------|
-| agent-001 ~ agent-005 | various | scale-kit managed |
-| agent-legacy-006 ~ agent-legacy-008 | various | scale-kit managed |
-| agent-009 | various | scale-kit managed |
-| qqclaw-validator | 0xA98d... | validator agent, migrated from standalone daemon |
+| agent-001 | 0xF628086296B0fC4dCb8e9B8432Ca0aE89B5BA2F4 | scale-kit managed |
+| agent-002 | 0xCCEa383facB2be40F4776E4B0935c4Fb3fa57C3D | scale-kit managed |
+| agent-003 | 0x596b90a3d5Df86B124d3bFbBf01B2FA3CEC0cFB8 | scale-kit managed |
+| agent-004 | 0x8a9f9F5B609D93dB7B64BA2c284ddb1c067F5a11 | scale-kit managed |
+| agent-005 | 0xF4914A80C40E8a4B34502B672728B60C0753574E | scale-kit managed |
+| agent-legacy-006 | 0xEDc2B7e121C4f78104dCAE669CC79E66FFEF9B50 | scale-kit managed |
+| agent-legacy-007 | 0x71f3a07B95dBB283c19A7f37dc93fE50134D7250 | scale-kit managed |
+| agent-legacy-008 | 0x98E33ba59e36453b5910F683040b9BE16280a2F3 | scale-kit managed |
+| agent-009 | 0x7B4A3F8d501FDD31A9dC4Bc8dbE312121D276b57 | scale-kit managed |
+| qqclaw-validator | 0xA98dC2a1E964ED8fB96539045C7dab75C3Ddd34f | validator, migrated from standalone daemon |
 
 **AI Challenge participation** is handled via the heartbeat daemon's normal heartbeat
 (~500 s interval, HeartbeatInterval = 100 blocks), which triggers `IncrementEpochActivity()` on-chain.
-The standalone `axon-agent-qqclaw.service` has been retired; qqclaw-validator is now managed by heartbeat-daemon.
+The standalone `axon-agent-qqclaw.service` has been retired (disabled 2026-03-27);
+qqclaw-validator has no Docker container — heartbeat is sent directly via RPC by heartbeat-daemon.
 
 ## On-Chain Register (payable)
 
