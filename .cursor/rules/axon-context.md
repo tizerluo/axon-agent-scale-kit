@@ -22,6 +22,7 @@ These files are the **source of truth**. Do not rely on memory or assumptions ab
 - **Managed agents:** `agent-001`–`agent-005`, `agent-legacy-006`–`agent-legacy-008`, `agent-009`, `qqclaw-validator`（共 10 个，全部 registered=true, staked=true）
 - **State source:** `state/deploy_state.json` 已与服务器同步（block 164901 心跳），所有 agent 链上在线
 - **qqclaw-validator 特殊情况：** 由 `axon-heartbeat-daemon.service` 统一发心跳，无独立 Docker 容器，`service_active` 由 heartbeat-batch 自动维护
+- **容器角色澄清：** `agent_worker.py` 是纯日志容器（30s 打印一次心跳状态），不发送链上交易；真正的链上心跳来自 `axon-heartbeat-daemon.service`，`lifecycle-report` 以链上结果为准
 
 ## Red Lines (Forbidden Actions)
 
