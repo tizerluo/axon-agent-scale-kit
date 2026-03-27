@@ -908,6 +908,55 @@ class AxonCtlRegressionTests(unittest.TestCase):
         axonctl.save_state(str(self.state_file), state)
         self.assertEqual(axonctl.lifecycle_repair(str(self.state_file), str(self.network_file), None), 0)
 
+    # ── Challenge answer bank tests ─────────────────────────────────────────
+
+    def test_load_answer_bank_fills_missing(self) -> None:
+        bank = axonctl.load_answer_bank(str(Path(__file__).resolve().parents[1] / "configs" / "challenge_answers.yaml"))
+        filled = sum(1 for v in bank.values() if v)
+        self.assertEqual(len(bank), 110)
+        self.assertGreaterEqual(filled, 88)
+
+    def test_challenge_validate_simulate_mode(self) -> None:
+        # validate_challenge_settings expects the challenge sub-dict (not wrapped in {"challenge": ...})
+        cfg = {
+            "enabled": True,
+            "execution_mode": "simulate",
+            "bank_source_url": "http://x",
+            "ai_challenge_window_blocks": 50,
+        }
+        errs = axonctl.validate_challenge_settings(cfg)
+        self.assertEqual(errs, [])
+
+    def test_challenge_validate_command_mode(self) -> None:
+        cfg = {
+            "enabled": True,
+            "execution_mode": "command",
+            "bank_source_url": "http://x",
+            "ai_challenge_window_blocks": 50,
+            "command": {"submit_template": "axond tx agent submit {key}", "reveal_template": "axond tx agent reveal {key}"},
+        }
+        errs = axonctl.validate_challenge_settings(cfg)
+        self.assertEqual(errs, [])
+
+    def test_challenge_validate_invalid_mode(self) -> None:
+        cfg = {
+            "enabled": True,
+            "execution_mode": "badmode",
+            "bank_source_url": "http://x",
+            "ai_challenge_window_blocks": 50,
+        }
+        errs = axonctl.validate_challenge_settings(cfg)
+        self.assertTrue(any("execution_mode" in e for e in errs))
+
+    def test_challenge_validate_window_blocks_required(self) -> None:
+        cfg = {
+            "enabled": True,
+            "execution_mode": "simulate",
+            "bank_source_url": "http://x",
+        }
+        errs = axonctl.validate_challenge_settings(cfg)
+        self.assertTrue(any("ai_challenge_window_blocks" in e for e in errs))
+
 
 if __name__ == "__main__":
     unittest.main()
