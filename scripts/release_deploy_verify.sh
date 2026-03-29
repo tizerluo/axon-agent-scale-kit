@@ -231,7 +231,7 @@ ARCHIVE_REPO           = os.environ["ARCHIVE_REPO"]
 def run(*args, **kw):
     r = subprocess.run(*args, **kw)
     if r.returncode != 0 and not kw.get("check", False):
-        sys.stderr.write((r.stderr or b"").decode())
+        err = r.stderr or ""; sys.stderr.write(err if isinstance(err, str) else err.decode())
         sys.stderr.flush()
     return r
 
@@ -323,34 +323,67 @@ log(f".release_meta.json written (locked: {DEPLOY_COMMIT})")
 # 9. 清理临时文件
 os.remove(ARCHIVE_TMP)
 
+SCRIPTS_DIR = os.path.join(REMOTE_DIR, "scripts")
+CURRENT_SCRIPTS = os.path.join(current_link, "scripts")
+if os.path.islink(SCRIPTS_DIR) or os.path.exists(SCRIPTS_DIR):
+    if os.path.islink(SCRIPTS_DIR):
+        os.remove(SCRIPTS_DIR)
+    else:
+        import shutil; shutil.rmtree(SCRIPTS_DIR)
+os.symlink(CURRENT_SCRIPTS, SCRIPTS_DIR)
+log(f"scripts/ symlink updated: {SCRIPTS_DIR} -> {CURRENT_SCRIPTS}")
+
+SERVICE_DROPIN = "/etc/systemd/system/" + SERVICE_NAME + ".d/override.conf"
+run(["sudo", "mkdir", "-p", os.path.dirname(SERVICE_DROPIN)], check=False)
+EXEC_START_LINE = (
+    "[Service]" + chr(10) +
+    "Environment=PYTHONPATH=" + current_link + chr(10) +
+    "WorkingDirectory=" + REMOTE_DIR + chr(10) +
+    "ExecStart=" + chr(10) +
+    "ExecStart=/usr/bin/python3 " + current_link + "/scripts/axonctl.py heartbeat-daemon " +
+    "--state-file " + REMOTE_DIR + "/state/deploy_state.json " +
+    "--network " + current_link + "/configs/network.yaml " +
+    "--interval-sec 60" + chr(10)
+)
+run(["sudo", "tee", SERVICE_DROPIN], input=EXEC_START_LINE.encode(), check=False)
+log("systemd override written: " + SERVICE_DROPIN)
+run(["sudo", "systemctl", "daemon-reload"], check=False)
+
 # 10. 重启服务
 log(f"restarting {SERVICE_NAME}")
-run(["systemctl", "is-active", SERVICE_NAME"], check=False)
-run(["systemctl", "restart", SERVICE_NAME"], check=True)
+run(["sudo", "systemctl", "is-active", SERVICE_NAME], check=False)
+run(["sudo", "systemctl", "restart", SERVICE_NAME], check=True)
 
 if DEPLOY_CHALLENGE == "1":
     log("restarting axon-challenge-daemon")
-    run(["systemctl", "is-active", "axon-challenge-daemon"], check=False)
-    run(["systemctl", "restart", "axon-challenge-daemon"], check=True)
+    run(["sudo", "systemctl", "is-active", "axon-challenge-daemon"], check=False)
+    run(["sudo", "systemctl", "restart", "axon-challenge-daemon"], check=True)
 
 time.sleep(3)
 
 # 11. 验证状态
-status = run(["systemctl", "is-active", SERVICE_NAME"], capture_output=True, text=True)
-status = (status.stdout or status.stderr or b"unknown").decode().strip()
-log(f"{SERVICE_NAME} status: {status}")
-if status != "active":
+status = run(["sudo", "systemctl", "is-active", SERVICE_NAME], capture_output=True, text=True)
+status_val = (status.stdout or status.stderr or "unknown")
+status_str = (status.stdout or status.stderr or "unknown")
+if isinstance(status_str, bytes):
+    status_str = status_str.decode()
+status_str = status_str.strip()
+log(f"{SERVICE_NAME} status: {status_str}")
+if status_str != "active":
     r = run(["journalctl", "-u", SERVICE_NAME, "-n", "15", "--no-pager"], capture_output=True, text=True)
-    sys.stderr.write((r.stdout or b"").decode())
+    r_out = (r.stdout or b"") if isinstance(r.stdout, bytes) else (r.stdout or "")
+    sys.stderr.write(r_out if isinstance(r_out, str) else r_out.decode())
     sys.stderr.flush()
 
 # 12. lifecycle 验证
 log("running lifecycle verification")
+lc_env = dict(os.environ, PYTHONPATH=release_dir)
 run(
     ["python3", os.path.join(release_dir, "scripts", "axonctl.py"),
      "lifecycle-report",
      "--state-file", os.path.join(REMOTE_DIR, "state", "deploy_state.json"),
      "--network", os.path.join(release_dir, "configs", "network.yaml")],
+    env=lc_env,
     check=False
 )
 
@@ -501,34 +534,68 @@ log(f".release_meta.json written (locked: {DEPLOY_COMMIT})")
 # 9. 清理临时文件
 os.remove(ARCHIVE_TMP)
 
+SCRIPTS_DIR = os.path.join(REMOTE_DIR, "scripts")
+CURRENT_SCRIPTS = os.path.join(current_link, "scripts")
+if os.path.islink(SCRIPTS_DIR) or os.path.exists(SCRIPTS_DIR):
+    if os.path.islink(SCRIPTS_DIR):
+        os.remove(SCRIPTS_DIR)
+    else:
+        import shutil; shutil.rmtree(SCRIPTS_DIR)
+os.symlink(CURRENT_SCRIPTS, SCRIPTS_DIR)
+log(f"scripts/ symlink updated: {SCRIPTS_DIR} -> {CURRENT_SCRIPTS}")
+
+SERVICE_DROPIN = "/etc/systemd/system/" + SERVICE_NAME + ".d/override.conf"
+run(["sudo", "mkdir", "-p", os.path.dirname(SERVICE_DROPIN)], check=False)
+EXEC_START_LINE = (
+    "[Service]" + chr(10) +
+    "Environment=PYTHONPATH=" + current_link + chr(10) +
+    "WorkingDirectory=" + REMOTE_DIR + chr(10) +
+    "ExecStart=" + chr(10) +
+    "ExecStart=/usr/bin/python3 " + current_link + "/scripts/axonctl.py heartbeat-daemon " +
+    "--state-file " + REMOTE_DIR + "/state/deploy_state.json " +
+    "--network " + current_link + "/configs/network.yaml " +
+    "--interval-sec 60" + chr(10)
+)
+
+run(["sudo", "tee", SERVICE_DROPIN], input=EXEC_START_LINE.encode(), check=False)
+log("systemd override written: " + SERVICE_DROPIN)
+run(["sudo", "systemctl", "daemon-reload"], check=False)
+
 # 10. 重启服务
 log(f"restarting {SERVICE_NAME}")
-run(["systemctl", "is-active", SERVICE_NAME"], check=False)
-run(["systemctl", "restart", SERVICE_NAME"], check=True)
+run(["sudo", "systemctl", "is-active", SERVICE_NAME], check=False)
+run(["sudo", "systemctl", "restart", SERVICE_NAME], check=True)
 
 if DEPLOY_CHALLENGE == "1":
     log("restarting axon-challenge-daemon")
-    run(["systemctl", "is-active", "axon-challenge-daemon"], check=False)
-    run(["systemctl", "restart", "axon-challenge-daemon"], check=True)
+    run(["sudo", "systemctl", "is-active", "axon-challenge-daemon"], check=False)
+    run(["sudo", "systemctl", "restart", "axon-challenge-daemon"], check=True)
 
 time.sleep(3)
 
 # 11. 验证状态
-status = run(["systemctl", "is-active", SERVICE_NAME"], capture_output=True, text=True)
-status = (status.stdout or status.stderr or b"unknown").decode().strip()
-log(f"{SERVICE_NAME} status: {status}")
-if status != "active":
+status = run(["sudo", "systemctl", "is-active", SERVICE_NAME], capture_output=True, text=True)
+status_val = (status.stdout or status.stderr or "unknown")
+status_str = (status.stdout or status.stderr or "unknown")
+if isinstance(status_str, bytes):
+    status_str = status_str.decode()
+status_str = status_str.strip()
+log(f"{SERVICE_NAME} status: {status_str}")
+if status_str != "active":
     r = run(["journalctl", "-u", SERVICE_NAME, "-n", "15", "--no-pager"], capture_output=True, text=True)
-    sys.stderr.write((r.stdout or b"").decode())
+    r_out = (r.stdout or b"") if isinstance(r.stdout, bytes) else (r.stdout or "")
+    sys.stderr.write(r_out if isinstance(r_out, str) else r_out.decode())
     sys.stderr.flush()
 
 # 12. lifecycle 验证
 log("running lifecycle verification")
+lc_env = dict(os.environ, PYTHONPATH=release_dir)
 run(
     ["python3", os.path.join(release_dir, "scripts", "axonctl.py"),
      "lifecycle-report",
      "--state-file", os.path.join(REMOTE_DIR, "state", "deploy_state.json"),
      "--network", os.path.join(release_dir, "configs", "network.yaml")],
+    env=lc_env,
     check=False
 )
 

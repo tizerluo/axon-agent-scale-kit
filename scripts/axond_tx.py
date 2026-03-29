@@ -19,6 +19,11 @@ Commit hash 算法（从 axon-chain/x/agent/keeper/msg_server.go 确认）：
 """
 
 from __future__ import annotations
+import sys as _sys, os as _os
+_axond_scripts_dir = _os.path.dirname(_os.path.abspath(__file__))
+if _axond_scripts_dir not in _sys.path:
+    _sys.path.insert(0, _axond_scripts_dir)
+del _axond_scripts_dir, _sys, _os
 
 import json
 import re
@@ -92,15 +97,14 @@ def evm_to_bech32(evm_address: str) -> str | None:
         return None
     for line in stdout.splitlines():
         line = line.strip()
-        if "Bech32 Acc" in line:
-            # 格式：Bech32 Acc: axon1xxxx
-            return line.split(":", 1)[1].strip()
-        if "Bech32" in line and "axon1" in line:
-            # 其他可能格式：Bech32 Acc axon1xxxx
-            parts = line.split()
-            for i, p in enumerate(parts):
-                if p == "Bech32" and i + 1 < len(parts):
-                    return parts[i + 1]
+        if not line:
+            continue
+        # 找第一个以 axon1 开头的 token（兼容所有格式）
+        # 格式 A（有冒号）：Bech32 Acc: axon1xxxx
+        # 格式 B（无冒号）：Bech32 Acc axon1xxxx
+        for token in line.replace(":", " ").split():
+            if token.startswith("axon1") and len(token) > 10:
+                return token
     return None
 
 
