@@ -1077,14 +1077,15 @@ def heartbeat_batch(state_file: str, network: str, request_id: str | None, max_r
     failed = []
     for name in targets:
         before_tx = load_state(state_file).get("agents", {}).get(name, {}).get("last_heartbeat_tx")
-        code = heartbeat_once(
-            state_file=state_file,
-            network=network,
-            agent=name,
-            max_retries=max_retries,
-            backoff_seconds=backoff_seconds,
-            receipt_timeout_sec=receipt_timeout_sec,
-        )
+        with NonceManager(name, timeout=60):
+            code = heartbeat_once(
+                state_file=state_file,
+                network=network,
+                agent=name,
+                max_retries=max_retries,
+                backoff_seconds=backoff_seconds,
+                receipt_timeout_sec=receipt_timeout_sec,
+            )
         current = load_state(state_file).get("agents", {}).get(name, {})
         after_tx = current.get("last_heartbeat_tx")
         if code == 0 and after_tx and after_tx != before_tx:
@@ -1273,39 +1274,77 @@ def challenge_run_once(state_file: str, network: str, agent: str) -> int:
         return 1
     bank = load_answer_bank(cfg.get("answer_bank_file", "configs/challenge_answers.yaml"))
     current_block = get_current_block_healthy(network_cfg)
-    idx = current_block % len(pool)
-    item = pool[idx]
-    question = item["question"]
-    expected_hash = item["answer_hash"]
-    source = "non_llm"
-    answer = bank.get(question, "").strip()
-    if not answer and not bool(cfg.get("non_llm_first", True)):
-        ok, llm_answer, model = _openrouter_answer(question, cfg)
-        if ok:
-            answer = llm_answer
-            source = f"llm:{model}"
-    elif not answer:
-        ok, llm_answer, model = _openrouter_answer(question, cfg)
-        if ok:
-            answer = llm_answer
-            source = f"llm:{model}"
-    if not answer:
-        state["events"].append({"ts": now_ts(), "type": "challenge_failed", "agent": agent, "reason": "no_answer_for_question", "question": question})
-        save_state(state_file, state)
-        print(json.dumps({"ok": False, "error": "no answer resolved", "question": question}, ensure_ascii=False, indent=2))
-        return 1
-    actual_hash = answer_hash(answer)
-    if actual_hash != expected_hash:
-        state["events"].append(
-            {"ts": now_ts(), "type": "challenge_failed", "agent": agent, "reason": "answer_hash_mismatch", "question": question, "actual_hash": actual_hash, "expected_hash": expected_hash}
-        )
-        save_state(state_file, state)
-        print(json.dumps({"ok": False, "error": "answer hash mismatch", "question": question, "actual_hash": actual_hash, "expected_hash": expected_hash}, ensure_ascii=False, indent=2))
-        return 1
-    # ── command 模式：用 Keeper 算法（EVM→bech32 后计算 raw hash，不 normalize）────
-    # ── simulate 模式：用原有算法（兼容现有 state 格式）────────────────────────────
+
+    # ── command 模式：先用 keeper 返回的 challenge_hash 查找 question ───────────
+    # Keeper 暴露的 challenge_hash = SHA256(question)，可用于逆向查找。
+    # 这是 command 模式正确工作的前提——必须知道 keeper 选的是哪个 question。
+    # simulate 模式不需要此步骤，继续用 block % len(pool) 保持 state 格式兼容。
+    question = None
+    expected_hash = None
+    keeper_challenge_hash: str | None = None
+
     if cfg.get("execution_mode") == "command":
+        from scripts import _shared_crypto as _sc
         from scripts import axond_tx as _axond_tx
+
+        client = _axond_tx.AxondClient(network_cfg, state_file)
+        current_challenge = client.query_current_challenge()
+        if not current_challenge:
+            state["events"].append({"ts": now_ts(), "type": "challenge_failed", "agent": agent, "reason": "no_active_challenge"})
+            save_state(state_file, state)
+            print(json.dumps({"ok": False, "error": "no active challenge on chain", "agent": agent}, ensure_ascii=False, indent=2))
+            return 1
+
+        keeper_challenge_hash = current_challenge.get("challenge_hash", "") or current_challenge.get("ChallengeHash", "")
+
+        # 逆向查找：遍历本地 pool，找 SHA256(question) == challenge_hash 的项
+        for item in pool:
+            if _sc.keeper_question_hash(item["question"]).lower() == keeper_challenge_hash.lower():
+                question = item["question"]
+                expected_hash = item["answer_hash"]
+                break
+
+        if not question:
+            # challenge_hash 在本地 pool 中不存在。
+            # 可能：本地 pool 过期（keeper 增加了新 question）；fallback 到 block index。
+            idx = current_block % len(pool)
+            question = pool[idx]["question"]
+            expected_hash = pool[idx]["answer_hash"]
+            state["events"].append({
+                "ts": now_ts(),
+                "type": "challenge_pool_miss",
+                "agent": agent,
+                "keeper_challenge_hash": keeper_challenge_hash,
+                "fallback_idx": idx,
+                "fallback_question": question,
+            })
+            save_state(state_file, state)
+
+        # 从 bank 查 answer
+        answer = bank.get(question, "").strip()
+        if not answer and bool(cfg.get("non_llm_first", True)):
+            ok, llm_answer, model = _openrouter_answer(question, cfg)
+            if ok:
+                answer = llm_answer
+        if not answer:
+            ok, llm_answer, model = _openrouter_answer(question, cfg)
+            if ok:
+                answer = llm_answer
+
+        if not answer:
+            state["events"].append({"ts": now_ts(), "type": "challenge_failed", "agent": agent, "reason": "no_answer_for_question", "question": question})
+            save_state(state_file, state)
+            print(json.dumps({"ok": False, "error": "no answer resolved", "question": question}, ensure_ascii=False, indent=2))
+            return 1
+
+        actual_hash = _sc.keeper_answer_hash(answer)
+        if actual_hash != expected_hash:
+            state["events"].append(
+                {"ts": now_ts(), "type": "challenge_failed", "agent": agent, "reason": "answer_hash_mismatch", "question": question, "actual_hash": actual_hash, "expected_hash": expected_hash}
+            )
+            save_state(state_file, state)
+            print(json.dumps({"ok": False, "error": "answer hash mismatch", "question": question, "actual_hash": actual_hash, "expected_hash": expected_hash}, ensure_ascii=False, indent=2))
+            return 1
 
         cosmos_addr = _axond_tx.evm_to_bech32(state["agents"].get(agent, {}).get("wallet_address", ""))
         if not cosmos_addr:
@@ -1313,67 +1352,88 @@ def challenge_run_once(state_file: str, network: str, agent: str) -> int:
             save_state(state_file, state)
             print(json.dumps({"ok": False, "error": "cosmos address lookup failed", "agent": agent}, ensure_ascii=False, indent=2))
             return 1
-        commit_hash = keeper_commit_hash(cosmos_addr, answer)
-        challenge_id = f"cmd-{commit_hash[:16]}"
-    else:
-        commit_hash = answer_hash(f"{agent}:{question}:{answer}")
-        challenge_id = f"sim-{commit_hash[:16]}"
-    commit_tx = f"simulate:{commit_hash[:16]}"
-    reveal_tx = f"simulate:{commit_hash[16:]}"
 
-    # ── command 模式：发送真实 Cosmos SDK 交易 ─────────────────────────────────
-    # NonceManager 确保同一 agent 的 commit+reveal 原子提交，防止并发竞争
-    if cfg.get("execution_mode") == "command":
-        with NonceManager(agent, timeout=60):
-            client = _axond_tx.AxondClient(network_cfg, state_file)
-            current_challenge = client.query_current_challenge()
-            if not current_challenge:
-                state["events"].append({"ts": now_ts(), "type": "challenge_failed", "agent": agent, "reason": "no_active_challenge"})
+        commit_hash = _sc.keeper_commit_hash(cosmos_addr, answer)
+        challenge_id = f"cmd-{commit_hash[:16]}"
+        source = "non_llm"
+
+        # ── command 模式：发送真实 Cosmos SDK 交易 ─────────────────────────────────
+        # 调用方（challenge_batch / repair_daemon / CLI）负责持 NonceManager，
+        # 确保同一 agent 的 commit+reveal 与 heartbeat-daemon 之间无并发竞争窗口。
+        epoch = current_challenge.get("epoch", 0)
+        deadline_block = current_challenge.get("deadline_block", 0)
+        window_blocks = int(cfg.get("ai_challenge_window_blocks", 50))
+
+        last_commit = state["agents"].get(agent, {}).get("last_challenge_commit_tx", "")
+        already_committed = bool(last_commit) and not str(last_commit).startswith("simulate:")
+        already_revealed = not str(state["agents"].get(agent, {}).get("last_challenge_reveal_tx", "")).startswith("simulate:")
+
+        commit_ok = already_committed
+        reveal_ok = already_revealed
+        commit_tx_hash = last_commit if already_committed else ""
+        reveal_tx_hash = state["agents"].get(agent, {}).get("last_challenge_reveal_tx", "") if already_revealed else ""
+
+        if not already_committed and current_block <= deadline_block:
+            ok, tx_hash_or_err = client.submit_commit(agent, epoch, commit_hash)
+            if ok:
+                commit_ok = True
+                commit_tx_hash = tx_hash_or_err
+            else:
+                state["events"].append({"ts": now_ts(), "type": "challenge_commit_failed", "agent": agent, "error": tx_hash_or_err, "commit_hash": commit_hash})
                 save_state(state_file, state)
-                print(json.dumps({"ok": False, "error": "no active challenge on chain", "agent": agent}, ensure_ascii=False, indent=2))
+                print(json.dumps({"ok": False, "error": f"commit tx failed: {tx_hash_or_err}", "agent": agent, "commit_hash": commit_hash}, ensure_ascii=False, indent=2))
                 return 1
 
-            epoch = current_challenge.get("epoch", 0)
-            deadline_block = current_challenge.get("deadline_block", 0)
-            window_blocks = int(cfg.get("ai_challenge_window_blocks", 50))
+        reveal_deadline = deadline_block + window_blocks
+        if already_committed and not already_revealed and deadline_block < current_block <= reveal_deadline:
+            ok, tx_hash_or_err = client.submit_reveal(agent, epoch, answer)
+            if ok:
+                reveal_ok = True
+                reveal_tx_hash = tx_hash_or_err
+            else:
+                state["events"].append({"ts": now_ts(), "type": "challenge_reveal_failed", "agent": agent, "error": tx_hash_or_err})
+                save_state(state_file, state)
+                print(json.dumps({"ok": False, "error": f"reveal tx failed: {tx_hash_or_err}", "agent": agent}, ensure_ascii=False, indent=2))
+                return 1
 
-            # 检查是否已提交过（读取 state，不持锁）
-            last_commit = state["agents"].get(agent, {}).get("last_challenge_commit_tx", "")
-            already_committed = bool(last_commit) and not str(last_commit).startswith("simulate:")
-            already_revealed = not str(state["agents"].get(agent, {}).get("last_challenge_reveal_tx", "")).startswith("simulate:")
+        commit_tx = commit_tx_hash
+        reveal_tx = reveal_tx_hash
 
-            commit_ok = already_committed
-            reveal_ok = already_revealed
-            commit_tx_hash = last_commit if already_committed else ""
-            reveal_tx_hash = state["agents"].get(agent, {}).get("last_challenge_reveal_tx", "") if already_revealed else ""
-
-            # Commit 窗口：current_block <= deadline_block
-            if not already_committed and current_block <= deadline_block:
-                ok, tx_hash_or_err = client.submit_commit(agent, epoch, commit_hash)
-                if ok:
-                    commit_ok = True
-                    commit_tx_hash = tx_hash_or_err
-                else:
-                    state["events"].append({"ts": now_ts(), "type": "challenge_commit_failed", "agent": agent, "error": tx_hash_or_err, "commit_hash": commit_hash})
-                    save_state(state_file, state)
-                    print(json.dumps({"ok": False, "error": f"commit tx failed: {tx_hash_or_err}", "agent": agent, "commit_hash": commit_hash}, ensure_ascii=False, indent=2))
-                    return 1
-
-            # Reveal 窗口：deadline_block < current_block <= deadline_block + window_blocks
-            reveal_deadline = deadline_block + window_blocks
-            if already_committed and not already_revealed and deadline_block < current_block <= reveal_deadline:
-                ok, tx_hash_or_err = client.submit_reveal(agent, epoch, answer)
-                if ok:
-                    reveal_ok = True
-                    reveal_tx_hash = tx_hash_or_err
-                else:
-                    state["events"].append({"ts": now_ts(), "type": "challenge_reveal_failed", "agent": agent, "error": tx_hash_or_err})
-                    save_state(state_file, state)
-                    print(json.dumps({"ok": False, "error": f"reveal tx failed: {tx_hash_or_err}", "agent": agent}, ensure_ascii=False, indent=2))
-                    return 1
-
-            commit_tx = commit_tx_hash
-            reveal_tx = reveal_tx_hash
+    else:
+        # ── simulate 模式：原有逻辑保持不变 ───────────────────────────────────────
+        idx = current_block % len(pool)
+        item = pool[idx]
+        question = item["question"]
+        expected_hash = item["answer_hash"]
+        source = "non_llm"
+        answer = bank.get(question, "").strip()
+        if not answer and not bool(cfg.get("non_llm_first", True)):
+            ok, llm_answer, model = _openrouter_answer(question, cfg)
+            if ok:
+                answer = llm_answer
+                source = f"llm:{model}"
+        elif not answer:
+            ok, llm_answer, model = _openrouter_answer(question, cfg)
+            if ok:
+                answer = llm_answer
+                source = f"llm:{model}"
+        if not answer:
+            state["events"].append({"ts": now_ts(), "type": "challenge_failed", "agent": agent, "reason": "no_answer_for_question", "question": question})
+            save_state(state_file, state)
+            print(json.dumps({"ok": False, "error": "no answer resolved", "question": question}, ensure_ascii=False, indent=2))
+            return 1
+        actual_hash = answer_hash(answer)
+        if actual_hash != expected_hash:
+            state["events"].append(
+                {"ts": now_ts(), "type": "challenge_failed", "agent": agent, "reason": "answer_hash_mismatch", "question": question, "actual_hash": actual_hash, "expected_hash": expected_hash}
+            )
+            save_state(state_file, state)
+            print(json.dumps({"ok": False, "error": "answer hash mismatch", "question": question, "actual_hash": actual_hash, "expected_hash": expected_hash}, ensure_ascii=False, indent=2))
+            return 1
+        commit_hash = answer_hash(f"{agent}:{question}:{answer}")
+        challenge_id = f"sim-{commit_hash[:16]}"
+        commit_tx = f"simulate:{commit_hash[:16]}"
+        reveal_tx = f"simulate:{commit_hash[16:]}"
 
     state.setdefault("agents", {}).setdefault(agent, {})
     state["agents"][agent]["last_challenge_question"] = question
@@ -1442,7 +1502,11 @@ def challenge_batch(state_file: str, network: str, request_id: str | None) -> in
     passed = []
     failed = []
     for name in targets:
-        code = challenge_run_once(state_file, network, name)
+        # NonceManager 确保同一 agent 的 challenge_run_once 完整执行期间，
+        # heartbeat-daemon 无法插进来产生 nonce 冲突。
+        # 每个 agent 持独立锁，跨 agent 之间互不阻塞。
+        with NonceManager(name, timeout=60):
+            code = challenge_run_once(state_file, network, name)
         if code == 0:
             passed.append(name)
         else:
@@ -2584,14 +2648,18 @@ def lifecycle_repair(state_file: str, network: str, request_id: str | None) -> i
             item["service_active"] = True
             actions_done.append("restart_service")
         if "send_heartbeat" in health["actions"]:
-            code = heartbeat_once(state_file, network, name, None, None, None)
+            # 心跳和 challenge 使用同一把锁，防止 repair_daemon 内部对同一 agent
+            # 先 heartbeat 后 challenge 时，heartbeat-daemon 外部插进来产生 nonce 冲突。
+            with NonceManager(name, timeout=60):
+                code = heartbeat_once(state_file, network, name, None, None, None)
             if code == 0:
                 actions_done.append("send_heartbeat")
             else:
                 failed.append({"agent": name, "action": "send_heartbeat"})
                 continue
         if "run_challenge" in health["actions"]:
-            code = challenge_run_once(state_file, network, name)
+            with NonceManager(name, timeout=60):
+                code = challenge_run_once(state_file, network, name)
             if code == 0:
                 actions_done.append("run_challenge")
             else:
@@ -3088,7 +3156,8 @@ def main() -> int:
     if args.cmd == "challenge-gate-check":
         return challenge_gate_check(args.state_file, args.network, args.agent)
     if args.cmd == "challenge-run-once":
-        return challenge_run_once(args.state_file, args.network, args.agent)
+        with NonceManager(args.agent, timeout=60):
+            return challenge_run_once(args.state_file, args.network, args.agent)
     if args.cmd == "challenge-batch":
         return challenge_batch(args.state_file, args.network, args.request_id)
     if args.cmd == "challenge-daemon":

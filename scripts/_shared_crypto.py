@@ -3,6 +3,8 @@ scripts/_shared_crypto.py
 
 Keeper 链上验证使用的加密原语，与 Axon keeper 源码保持一致。
 所有使用 keeper 哈希算法的代码应从此模块导入，不要自行实现。
+
+当前实现的函数：
 """
 
 import hashlib
@@ -30,6 +32,16 @@ def keeper_answer_hash(answer: str) -> str:
     normalizeAnswer 去掉所有空格/Tab/换行，转小写。
     """
     return hashlib.sha256(go_normalize(answer).encode("utf-8")).hexdigest()
+
+
+def keeper_question_hash(question: str) -> str:
+    """
+    Keeper GenerateChallenge 中使用的 ChallengeHash。
+    算法：SHA256(question text)
+    用于通过链上返回的 challenge_hash 逆向查找对应的 question。
+    keeper 暴露的 challenge_data 即为此值。
+    """
+    return hashlib.sha256(question.encode("utf-8")).hexdigest()
 
 
 def keeper_commit_hash(cosmos_address: str, answer: str) -> str:
