@@ -5,7 +5,7 @@ if _scripts_dir not in _sys.path:
     _sys.path.insert(0, _scripts_dir)
 del _scripts_dir, _sys, _os
 
-from scripts import _shared_crypto
+import _shared_crypto
 
 import argparse
 import base64

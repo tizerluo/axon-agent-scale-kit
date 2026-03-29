@@ -21,7 +21,17 @@ from pathlib import Path
 
 import yaml
 
-from scripts import _shared_crypto
+import sys as _sys, os as _os
+__scd = _os.path.dirname(_os.path.abspath(__file__))
+if __scd not in _sys.path:
+    _sys.path.insert(0, __scd)
+del __scd, _sys, _os
+
+from _shared_crypto import (
+    normalize_answer,
+    answer_to_hash,
+    go_normalize,
+)
 
 
 BANK_SOURCE_URL = "https://raw.githubusercontent.com/axon-chain/axon/main/x/agent/keeper/challenge.go"
@@ -155,8 +165,7 @@ KNOWN_ANSWERS = {
 }
 
 
-# normalize_answer / answer_hash 均来自 _shared_crypto（Go 风格 normalize）
-normalize_answer = _shared_crypto.go_normalize
+# go_normalize 已直接 import（来自 _shared_crypto）
 
 
 def answer_hash(text: str) -> str:

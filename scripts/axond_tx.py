@@ -35,13 +35,12 @@ if __scd not in _sys.path:
     _sys.path.insert(0, __scd)
 del __scd, _sys, _os
 
+import _shared_crypto
 from _shared_crypto import (
-    normalize_answer,
-    answer_to_hash,
-    derive_commitment_hash,
-    derive_reveal_hash,
+    go_normalize,
+    keeper_answer_hash,
+    keeper_commit_hash,
 )
-
 
 # ─── 常量 ─────────────────────────────────────────────────────────────────────
 
