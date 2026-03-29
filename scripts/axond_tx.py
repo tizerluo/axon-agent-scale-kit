@@ -29,7 +29,18 @@ from urllib import request
 
 import yaml
 
-from scripts import _shared_crypto
+import sys as _sys, os as _os
+__scd = _os.path.dirname(_os.path.abspath(__file__))
+if __scd not in _sys.path:
+    _sys.path.insert(0, __scd)
+del __scd, _sys, _os
+
+from _shared_crypto import (
+    normalize_answer,
+    answer_to_hash,
+    derive_commitment_hash,
+    derive_reveal_hash,
+)
 
 
 # ─── 常量 ─────────────────────────────────────────────────────────────────────
