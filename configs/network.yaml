@@ -1,4 +1,5 @@
 rpc_url: "https://mainnet-rpc.axonchain.ai/"
+fallback_rpc_url: "https://rpc.axonchain.ai/"
 evm_chain_id: 8210
 cosmos_chain_id: "axon_8210-1"
 gas:
@@ -14,6 +15,18 @@ heartbeat:
   max_retries: 3
   backoff_seconds: 2
   receipt_timeout_sec: 120
+# ─── axond Cosmos SDK 配置 ───────────────────────────────────────────────────
+# 用于 AI Challenge commit/reveal 交易（MsgSubmitAIChallengeResponse 等）
+cosmos:
+  # chain_id 与顶层的 cosmos_chain_id 一致
+  chain_id: "axon_8210-1"
+  # Axon 自定义广播 API（axond tx 底层调用此端点）
+  rest_url: "https://mainnet-api.axonchain.ai"
+  # axond 密钥环目录（axond keys import 的 --keyring-dir 参数）
+  keyring_dir: "~/.axond"
+  # 广播模式：sync（推荐）/ async / block
+  broadcast_mode: "sync"
+# ─── challenge 配置 ───────────────────────────────────────────────────────────
 challenge:
   enabled: true
   validator_required: true
@@ -24,10 +37,17 @@ challenge:
   # execution_mode:
   #   "simulate"  — default. commit/reveal tx are constructed but NOT signed or submitted.
   #                 Safe for testing. State is written to deploy_state.json but no on-chain effect.
-  #   "command"   — signs and submits real commit/reveal transactions.
-  #                 Requires: openrouter.api_base + model_id configured, OR command.submit_template set.
-  #                 WARNING: real mode submits on-chain transactions; always run with --dry-run first.
   execution_mode: "simulate"
+  # command 模式模板（axond_tx.py 使用这些模板构建 shell 命令）
+  # 将以下占位符替换为实际值：
+  #   {key_name}   — axond keyring 中的密钥名（agent name）
+  #   {chain_id}   — Cosmos chain ID
+  #   {commit_hash} — SHA256(bech32_addr + ":" + answer) 的十六进制
+  #   {answer}      — 原始答案（用于 reveal，512 字节以内）
+  #   {epoch}       — 当前 epoch 编号
+  command:
+    submit_template: ""   # 例如：axond tx agent submit-ai-challenge-response {key_name} {commit_hash} --chain-id {chain_id} --keyring-dir {keyring_dir} --broadcast-mode {broadcast_mode} --yes
+    reveal_template: ""   # 例如：axond tx agent reveal-ai-challenge-response {key_name} {answer} --chain-id {chain_id} --keyring-dir {keyring_dir} --broadcast-mode {broadcast_mode} --yes
   openrouter:
     # Required for execution_mode="command" with LLM:
     #   api_base:  "https://openrouter.ai/api/v1/chat/completions"

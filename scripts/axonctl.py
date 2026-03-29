@@ -1,3 +1,6 @@
+from __future__ import annotations
+from scripts import _shared_crypto
+
 import argparse
 import base64
 import copy
@@ -114,6 +117,64 @@ REGISTER_ABI = [
         "type": "function",
     },
 ]
+NONCE_LOCK_DIR = "/tmp/axon-nonce"
+Path(NONCE_LOCK_DIR).mkdir(exist_ok=True)
+
+
+class NonceManager:
+    """
+    基于文件的分布式锁，确保同一 agent 同时只有一笔 pending tx。
+    解决 heartbeat-daemon 和 challenge-daemon 并发时 nonce 冲突。
+
+    使用方式：
+        with NonceManager(agent):
+            ok, tx = _submit_heartbeat_tx(...)
+            ...
+
+    锁文件：{NONCE_LOCK_DIR}/{agent}.lock
+    """
+
+    def __init__(self, agent: str, timeout: int = 30):
+        self.agent = str(agent)
+        self.timeout = timeout
+        self._lock_fd: int | None = None
+        self._lock_path = Path(NONCE_LOCK_DIR) / f"{self.agent}.lock"
+
+    def acquire(self) -> bool:
+        """尝试获取锁，超时返回 False。"""
+        start = time.time()
+        while True:
+            try:
+                self._lock_fd = os.open(str(self._lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                # 写入当前进程 PID，方便调试
+                os.write(self._lock_fd, f"{os.getpid()}".encode())
+                os.close(self._lock_fd)
+                self._lock_fd = None
+                return True
+            except FileExistsError:
+                pass
+            except OSError:
+                return False
+            if time.time() - start >= self.timeout:
+                return False
+            time.sleep(0.1)
+
+    def release(self) -> None:
+        """释放锁。"""
+        try:
+            self._lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def __enter__(self) -> "NonceManager":
+        if not self.acquire():
+            raise RuntimeError(f"NonceManager: failed to acquire lock for agent={self.agent} within {self.timeout}s")
+        return self
+
+    def __exit__(self, *args) -> None:
+        self.release()
+
+
 DEFAULT_HEARTBEAT = {
     "interval_blocks": 100,
     "timeout_blocks": 720,
@@ -160,7 +221,12 @@ def load_state(path: str) -> dict:
 def save_state(path: str, state: dict) -> None:
     state_path = Path(path)
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    text = json.dumps(state, ensure_ascii=False, indent=2)
+    # 原子写入：先写临时文件，再 rename 到目标路径。
+    # rename 在 POSIX 下是原子的（同一文件系统保证），进程崩溃不会留下半写文件。
+    tmp = state_path.with_suffix(".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, state_path)
 
 
 def rpc_chain_id(rpc_url: str, timeout_sec: int = 5) -> tuple[bool, int | None, str | None]:
@@ -233,18 +299,36 @@ def validate_challenge_settings(cfg: dict) -> list[str]:
     if not cfg.get("bank_source_url"):
         errors.append("challenge.bank_source_url is required")
     if cfg.get("execution_mode") == "command":
+        # submit_template/reveal_template 在 network.yaml 中存在即可（允许空字符串）。
+        # axond_tx.py 不依赖模板，模板字段是为运维场景保留的。
         cmd = cfg.get("command", {})
-        if not isinstance(cmd, dict) or not cmd.get("submit_template") or not cmd.get("reveal_template"):
-            errors.append("challenge.command.submit_template and reveal_template are required for command mode")
+        if not isinstance(cmd, dict):
+            errors.append("challenge.command must be a dict for command mode")
     return errors
 
 
-def normalize_answer(text: str) -> str:
-    return re.sub(r"\s+", " ", (text or "").strip().lower())
+# ─── Hash 算法（来自 _shared_crypto，与 Axon keeper 源码保持一致）──────────────
+# normalize_answer / keeper_commit_hash / answer_hash 均来自共享模块，
+# 避免本地重复实现导致与链上逻辑分化。
+
+# keeper_commit_hash: SHA256(bech32_addr + ":" + raw_answer)，不做 normalize
+keeper_commit_hash = _shared_crypto.keeper_commit_hash
 
 
 def answer_hash(text: str) -> str:
-    return hashlib.sha256(normalize_answer(text).encode("utf-8")).hexdigest()
+    """
+    AnswerHash（challengePool 中的 hash）使用的算法。
+    keeper 在 evaluate 时：revealHash = SHA256(normalizeAnswer(resp.RevealData))
+    normalizeAnswer 等价于 _shared_crypto.go_normalize：去掉所有空格/tab/换行，小写。
+    """
+    return _shared_crypto.keeper_answer_hash(text)
+
+
+def normalize_answer(text: str) -> str:
+    """
+    兼容别名，内部已不使用，统一使用 _shared_crypto.go_normalize。
+    """
+    return _shared_crypto.go_normalize(text)
 
 
 def fetch_challenge_pool(bank_source_url: str) -> list[dict]:
@@ -272,6 +356,36 @@ def get_current_block(rpc_url: str) -> int:
     with request.urlopen(req, timeout=10) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     return int(data["result"], 16)
+
+
+def get_current_block_healthy(network_cfg: dict) -> int:
+    """
+    获取当前区块号，同时验证 RPC 健康度。
+    如果配置了 fallback_rpc_url，对比两个端点的返回值：
+    - 差值 ≤ 5 块：主端点可用，返回主端点值
+    - 差值 > 5 块：主端点可能滞后，警告并仍返回主端点值（保守）
+    - 主端点失败：降级到 fallback，返回 fallback 值
+    """
+    primary = network_cfg.get("rpc_url", "")
+    fallback = network_cfg.get("fallback_rpc_url", "")
+    try:
+        block = get_current_block(primary)
+        if fallback:
+            try:
+                fallback_block = get_current_block(fallback)
+                diff = abs(block - fallback_block)
+                if diff > 5:
+                    logging.warning(
+                        "RPC freshness warning: primary=%d, fallback=%d (diff=%d). "
+                        "Primary RPC may be stale.", block, fallback_block, diff
+                    )
+            except Exception:
+                pass  # fallback 查询失败不影响主端点
+        return block
+    except Exception:
+        if fallback:
+            return get_current_block(fallback)
+        raise
 
 
 def mask_secret(value: str) -> str:
@@ -884,14 +998,19 @@ def heartbeat_once(state_file: str, network: str, agent: str, max_retries: int |
     if not wallet:
         print(json.dumps({"ok": False, "error": f"wallet not found for {agent}"}, ensure_ascii=False, indent=2))
         return 1
-    ok, tx = _submit_heartbeat_tx(
-        rpc_url=rpc_url,
-        chain_id=chain_id,
-        private_key=wallet.get("private_key", ""),
-        max_retries=retries,
-        backoff_seconds=backoff,
-        receipt_timeout_sec=receipt_timeout,
-    )
+    try:
+        with NonceManager(agent):
+            ok, tx = _submit_heartbeat_tx(
+                rpc_url=rpc_url,
+                chain_id=chain_id,
+                private_key=wallet.get("private_key", ""),
+                max_retries=retries,
+                backoff_seconds=backoff,
+                receipt_timeout_sec=receipt_timeout,
+            )
+    except RuntimeError as e:
+        print(json.dumps({"ok": False, "error": str(e), "agent": agent}, ensure_ascii=False, indent=2))
+        return 1
     if ok:
         state.setdefault("agents", {}).setdefault(agent, {})
         state["agents"][agent]["heartbeat_at"] = now_ts()
@@ -1043,14 +1162,42 @@ def challenge_gate_check(state_file: str, network: str, agent: str) -> int:
         "phase": "unknown",
     }
     try:
-        current_block = get_current_block(network_cfg["rpc_url"])
-        epoch_length = int(network_cfg.get("epoch_length_blocks", 720))
-        window = int(cfg.get("ai_challenge_window_blocks", 50))
-        offset = current_block % epoch_length
-        checks["phase"] = "commit" if offset < window else ("reveal" if offset < (window * 2) else "closed")
-        checks["window_open"] = checks["phase"] in {"commit", "reveal"}
+        current_block = get_current_block_healthy(network_cfg)
+        window_blocks = int(cfg.get("ai_challenge_window_blocks", 50))
         checks["current_block"] = current_block
-        checks["epoch_offset"] = offset
+
+        # 优先从链上查询真实 deadline_block（command 模式必须）
+        # simulate 模式降级使用 epoch offset 估算
+        deadline_block = None
+        try:
+            from scripts import axond_tx as _axond_tx
+            challenge_data = _axond_tx.query_current_challenge(network_cfg.get("cosmos", {}).get("rest_url", ""))
+            if challenge_data:
+                deadline_block = int(challenge_data.get("deadline_block", 0))
+                checks["challenge_epoch"] = challenge_data.get("epoch", 0)
+                checks["challenge_hash"] = challenge_data.get("challenge_hash", "")
+                checks["deadline_block"] = deadline_block
+        except Exception:
+            pass  # 降级使用 epoch offset 估算
+
+        if deadline_block and deadline_block > 0:
+            # command 模式：使用链上真实 deadline_block
+            if current_block <= deadline_block:
+                checks["phase"] = "commit"
+                checks["window_open"] = True
+            elif deadline_block < current_block <= deadline_block + window_blocks:
+                checks["phase"] = "reveal"
+                checks["window_open"] = True
+            else:
+                checks["phase"] = "closed"
+                checks["window_open"] = False
+        else:
+            # simulate 模式降级：使用 epoch offset 估算（兼容性保留）
+            epoch_length = int(network_cfg.get("epoch_length_blocks", 720))
+            offset = current_block % epoch_length
+            checks["phase"] = "commit" if offset < window_blocks else ("reveal" if offset < (window_blocks * 2) else "closed")
+            checks["window_open"] = checks["phase"] in {"commit", "reveal"}
+            checks["epoch_offset"] = offset
     except Exception as e:
         checks["window_open"] = False
         checks["phase"] = "unknown"
@@ -1119,7 +1266,7 @@ def challenge_run_once(state_file: str, network: str, agent: str) -> int:
         print(json.dumps({"ok": False, "error": "challenge pool is empty"}, ensure_ascii=False, indent=2))
         return 1
     bank = load_answer_bank(cfg.get("answer_bank_file", "configs/challenge_answers.yaml"))
-    current_block = get_current_block(network_cfg["rpc_url"])
+    current_block = get_current_block_healthy(network_cfg)
     idx = current_block % len(pool)
     item = pool[idx]
     question = item["question"]
@@ -1149,10 +1296,79 @@ def challenge_run_once(state_file: str, network: str, agent: str) -> int:
         save_state(state_file, state)
         print(json.dumps({"ok": False, "error": "answer hash mismatch", "question": question, "actual_hash": actual_hash, "expected_hash": expected_hash}, ensure_ascii=False, indent=2))
         return 1
-    commit_hash = answer_hash(f"{agent}:{question}:{answer}")
-    challenge_id = f"sim-{commit_hash[:16]}"
+    # ── command 模式：用 Keeper 算法（EVM→bech32 后计算 raw hash，不 normalize）────
+    # ── simulate 模式：用原有算法（兼容现有 state 格式）────────────────────────────
+    if cfg.get("execution_mode") == "command":
+        from scripts import axond_tx as _axond_tx
+
+        cosmos_addr = _axond_tx.evm_to_bech32(state["agents"].get(agent, {}).get("wallet_address", ""))
+        if not cosmos_addr:
+            state["events"].append({"ts": now_ts(), "type": "challenge_failed", "agent": agent, "reason": "cosmos_address_lookup_failed"})
+            save_state(state_file, state)
+            print(json.dumps({"ok": False, "error": "cosmos address lookup failed", "agent": agent}, ensure_ascii=False, indent=2))
+            return 1
+        commit_hash = keeper_commit_hash(cosmos_addr, answer)
+        challenge_id = f"cmd-{commit_hash[:16]}"
+    else:
+        commit_hash = answer_hash(f"{agent}:{question}:{answer}")
+        challenge_id = f"sim-{commit_hash[:16]}"
     commit_tx = f"simulate:{commit_hash[:16]}"
     reveal_tx = f"simulate:{commit_hash[16:]}"
+
+    # ── command 模式：发送真实 Cosmos SDK 交易 ─────────────────────────────────
+    # NonceManager 确保同一 agent 的 commit+reveal 原子提交，防止并发竞争
+    if cfg.get("execution_mode") == "command":
+        with NonceManager(agent, timeout=60):
+            client = _axond_tx.AxondClient(network_cfg, state_file)
+            current_challenge = client.query_current_challenge()
+            if not current_challenge:
+                state["events"].append({"ts": now_ts(), "type": "challenge_failed", "agent": agent, "reason": "no_active_challenge"})
+                save_state(state_file, state)
+                print(json.dumps({"ok": False, "error": "no active challenge on chain", "agent": agent}, ensure_ascii=False, indent=2))
+                return 1
+
+            epoch = current_challenge.get("epoch", 0)
+            deadline_block = current_challenge.get("deadline_block", 0)
+            window_blocks = int(cfg.get("ai_challenge_window_blocks", 50))
+
+            # 检查是否已提交过（读取 state，不持锁）
+            last_commit = state["agents"].get(agent, {}).get("last_challenge_commit_tx", "")
+            already_committed = bool(last_commit) and not str(last_commit).startswith("simulate:")
+            already_revealed = not str(state["agents"].get(agent, {}).get("last_challenge_reveal_tx", "")).startswith("simulate:")
+
+            commit_ok = already_committed
+            reveal_ok = already_revealed
+            commit_tx_hash = last_commit if already_committed else ""
+            reveal_tx_hash = state["agents"].get(agent, {}).get("last_challenge_reveal_tx", "") if already_revealed else ""
+
+            # Commit 窗口：current_block <= deadline_block
+            if not already_committed and current_block <= deadline_block:
+                ok, tx_hash_or_err = client.submit_commit(agent, epoch, commit_hash)
+                if ok:
+                    commit_ok = True
+                    commit_tx_hash = tx_hash_or_err
+                else:
+                    state["events"].append({"ts": now_ts(), "type": "challenge_commit_failed", "agent": agent, "error": tx_hash_or_err, "commit_hash": commit_hash})
+                    save_state(state_file, state)
+                    print(json.dumps({"ok": False, "error": f"commit tx failed: {tx_hash_or_err}", "agent": agent, "commit_hash": commit_hash}, ensure_ascii=False, indent=2))
+                    return 1
+
+            # Reveal 窗口：deadline_block < current_block <= deadline_block + window_blocks
+            reveal_deadline = deadline_block + window_blocks
+            if already_committed and not already_revealed and deadline_block < current_block <= reveal_deadline:
+                ok, tx_hash_or_err = client.submit_reveal(agent, epoch, answer)
+                if ok:
+                    reveal_ok = True
+                    reveal_tx_hash = tx_hash_or_err
+                else:
+                    state["events"].append({"ts": now_ts(), "type": "challenge_reveal_failed", "agent": agent, "error": tx_hash_or_err})
+                    save_state(state_file, state)
+                    print(json.dumps({"ok": False, "error": f"reveal tx failed: {tx_hash_or_err}", "agent": agent}, ensure_ascii=False, indent=2))
+                    return 1
+
+            commit_tx = commit_tx_hash
+            reveal_tx = reveal_tx_hash
+
     state.setdefault("agents", {}).setdefault(agent, {})
     state["agents"][agent]["last_challenge_question"] = question
     state["agents"][agent]["last_challenge_hash"] = expected_hash
@@ -1192,9 +1408,8 @@ def challenge_run_once(state_file: str, network: str, agent: str) -> int:
                 "block_height": current_block,
                 "execution_mode": cfg.get("execution_mode", "unknown"),
                 "participation_note": (
-                    "heartbeat_only: AI Challenge participation via heartbeat-daemon normal heartbeat. "
-                    "Real SubmitAIChallengeResponse+RevealAIChallengeResponse requires Cosmos SDK path "
-                    "(not EVM precompile) — not yet implemented in scale-kit."
+                    "real_onchain: SubmitAIChallengeResponse and RevealAIChallengeResponse "
+                    "submitted via axond Cosmos SDK CLI."
                 ),
             },
             ensure_ascii=False,
@@ -1234,6 +1449,47 @@ def challenge_batch(state_file: str, network: str, request_id: str | None) -> in
         )
     )
     return 0 if len(failed) == 0 else 1
+
+
+def challenge_daemon(
+    state_file: str,
+    network: str,
+    request_id: str | None,
+    interval_sec: int,
+    max_cycles: int,
+) -> int:
+    """
+    AI Challenge daemon：定期调用 challenge_batch。
+
+    使用 NonceManager 防止与 heartbeat-daemon 并发竞争同一 agent 的 nonce。
+    通过 execution_mode="command" 触发真实链上提交。
+    """
+    if interval_sec < 1:
+        print(json.dumps({"ok": False, "error": "interval_sec must be >= 1"}, ensure_ascii=False, indent=2))
+        return 1
+    if max_cycles < 0:
+        print(json.dumps({"ok": False, "error": "max_cycles must be >= 0"}, ensure_ascii=False, indent=2))
+        return 1
+    cycle = 0
+    print(json.dumps(
+        {"ok": True, "status": "challenge_daemon_started",
+         "interval_sec": interval_sec, "request_id": request_id, "max_cycles": max_cycles},
+        ensure_ascii=False, indent=2))
+    while True:
+        cycle += 1
+        code = challenge_batch(
+            state_file=state_file,
+            network=network,
+            request_id=request_id,
+        )
+        print(json.dumps(
+            {"ok": code == 0, "status": "cycle_done", "cycle": cycle, "ts": now_ts()},
+            ensure_ascii=False, indent=2))
+        if max_cycles > 0 and cycle >= max_cycles:
+            break
+        time.sleep(interval_sec)
+    print(json.dumps({"ok": True, "status": "challenge_daemon_stopped", "cycles": cycle}, ensure_ascii=False, indent=2))
+    return 0
 
 
 def init_local_env() -> dict:
@@ -2253,7 +2509,7 @@ def lifecycle_report(state_file: str, network: str, request_id: str | None) -> i
         return 1
     current_block = None
     try:
-        current_block = get_current_block(network_cfg.get("rpc_url", ""))
+        current_block = get_current_block_healthy(network_cfg)
     except Exception:
         current_block = None
     items = []
@@ -2305,7 +2561,7 @@ def lifecycle_repair(state_file: str, network: str, request_id: str | None) -> i
         return 1
     current_block = None
     try:
-        current_block = get_current_block(network_cfg.get("rpc_url", ""))
+        current_block = get_current_block_healthy(network_cfg)
     except Exception:
         current_block = None
     repaired = []
@@ -2709,6 +2965,13 @@ def main() -> int:
     p_challenge_batch.add_argument("--network", required=True)
     p_challenge_batch.add_argument("--request-id")
 
+    p_challenge_daemon = sub.add_parser("challenge-daemon")
+    p_challenge_daemon.add_argument("--state-file", default="state/deploy_state.json")
+    p_challenge_daemon.add_argument("--network", required=True)
+    p_challenge_daemon.add_argument("--request-id")
+    p_challenge_daemon.add_argument("--interval-sec", type=int, default=30)
+    p_challenge_daemon.add_argument("--max-cycles", type=int, default=0)
+
     p_lifecycle_report = sub.add_parser("lifecycle-report")
     p_lifecycle_report.add_argument("--state-file", default="state/deploy_state.json")
     p_lifecycle_report.add_argument("--network", required=True)
@@ -2822,6 +3085,14 @@ def main() -> int:
         return challenge_run_once(args.state_file, args.network, args.agent)
     if args.cmd == "challenge-batch":
         return challenge_batch(args.state_file, args.network, args.request_id)
+    if args.cmd == "challenge-daemon":
+        return challenge_daemon(
+            args.state_file,
+            args.network,
+            args.request_id,
+            args.interval_sec,
+            args.max_cycles,
+        )
     if args.cmd == "lifecycle-report":
         return lifecycle_report(args.state_file, args.network, args.request_id)
     if args.cmd == "lifecycle-repair":

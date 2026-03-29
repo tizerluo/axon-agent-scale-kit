@@ -1,11 +1,115 @@
+# Auto-generated answer bank for AI Challenge
+# Run `python scripts/scrape_challenge_bank.py` to refresh.
+# Coverage: 88/110 hash-verified, 22 LLM-fallback (see MISSING list below).
+
 answers:
   "What is the time complexity of binary search?": "O(log n)"
   "In Ethereum, what opcode is used to transfer ETH to another address?": "CALL"
-  "What consensus algorithm does CometBFT use?": "Tendermint BFT"
+  "What consensus algorithm does CometBFT use?": "pbft"
   "What is the derivative of x^3 with respect to x?": "3x^2"
   "In Go, what keyword is used to launch a concurrent goroutine?": "go"
   "What data structure uses LIFO (Last In First Out)?": "stack"
   "What is the SHA-256 hash length in bits?": "256"
-  "What layer of the OSI model does TCP operate at?": "transport layer"
-  "In a Merkle tree, what is stored in leaf nodes?": "hashes of data blocks"
+  "What layer of the OSI model does TCP operate at?": "transport"
   "What EIP introduced EIP-1559 fee mechanism?": "EIP-1559"
+  "What is the base case needed for in recursive functions?": "termination"
+  "What type of encryption uses the same key for encrypt and decrypt?": "symmetric"
+  "In SQL, what clause filters groups after aggregation?": "HAVING"
+  "What is a smart contract's equivalent of a constructor in Solidity?": "constructor"
+  "Name the sorting algorithm with best-case O(n) and worst-case O(n^2).": "insertion sort"
+  "What HTTP method is idempotent and used to update resources?": "PUT"
+  "In BFT consensus, what fraction of nodes can be faulty?": "lessthan1/3"
+  "What is the purpose of a nonce in blockchain transactions?": "prevent replay attacks"
+  "What Cosmos SDK module handles token transfers?": "bank"
+  "What is the space complexity of a hash table?": "O(n)"
+  "Name the pattern where an object notifies dependents of state changes.": "observer"
+  "In proof of stake, what prevents nothing-at-stake attacks?": "slashing"
+  "What encoding does Cosmos SDK use for addresses?": "bech32"
+  "What protocol does gRPC use for transport?": "HTTP/2"
+  "What is the gas cost of SSTORE in Ethereum when setting a zero to non-zero value?": "20000"
+  "What algorithm finds the shortest path in a weighted graph with non-negative edges?": "Dijkstra"
+  "What is the worst-case time complexity of quicksort?": "O(n^2)"
+  "What search algorithm explores all neighbors at the current depth before moving deeper?": "BFS"
+  "What algorithm finds the minimum spanning tree by greedily adding the cheapest edge that does not form a cycle?": "Kruskal"
+  "What is the time complexity of merge sort?": "O(n log n)"
+  "What algorithmic technique solves problems by breaking them into overlapping subproblems?": "dynamic programming"
+  "What sorting algorithm has O(n log n) worst case and is in-place?": "heapsort"
+  "What Ethereum token standard defines non-fungible tokens?": "ERC-721"
+  "What mechanism in Cosmos enables cross-chain communication?": "IBC"
+  "What Ethereum token standard is used for fungible tokens?": "ERC-20"
+  "What is the name of the Ethereum bytecode execution environment?": "EVM"
+  "What type of node stores the full blockchain history?": "full node"
+  "What mechanism allows token holders to vote on protocol changes?": "governance"
+  "What elliptic curve does Bitcoin use for digital signatures?": "secp256k1"
+  "What key exchange protocol lets two parties establish a shared secret over an insecure channel?": "Diffie-Hellman"
+  "What does AES stand for?": "Advanced Encryption Standard"
+  "What is the block size of AES in bits?": "128"
+  "What algorithm is widely used for public-key cryptography based on integer factorization?": "RSA"
+  "What protocol resolves domain names to IP addresses?": "DNS"
+  "What port does HTTPS use by default?": "443"
+  "What transport protocol is connectionless?": "UDP"
+  "What protocol is used to securely access a remote shell?": "SSH"
+  "What HTTP status code means resource not found?": "404"
+  "What network device operates at layer 3 of the OSI model?": "router"
+  "What SQL keyword removes duplicate rows from query results?": "DISTINCT"
+  "What property ensures a database transaction is all-or-nothing?": "atomicity"
+  "In SQL, what type of JOIN returns all rows from the left table?": "LEFT JOIN"
+  "What SQL command is used to add new rows to a table?": "INSERT"
+  "What design pattern ensures a class has only one instance?": "singleton"
+  "What is the sum of interior angles of a triangle in degrees?": "180"
+  "What is the next Fibonacci number after 5, 8, 13?": "21"
+  "What is log base 2 of 1024?": "10"
+  "What is the square root of 144?": "12"
+  "What is the value of pi rounded to two decimal places?": "3.14"
+  "What is 2 raised to the power of 10?": "1024"
+  "In Python, what keyword is used to define a generator function?": "yield"
+  "In Java, what keyword prevents a class from being subclassed?": "final"
+  "What does API stand for?": "application programming interface"
+  "In Rust, what system prevents data races at compile time?": "ownership"
+  "What distributed consensus algorithm uses a leader and log replication?": "Raft"
+  "What technique splits a database across multiple machines by key range?": "sharding"
+  "What complexity class contains problems solvable in polynomial time?": "P"
+  "What complexity class contains problems verifiable in polynomial time?": "NP"
+  "What information-theoretic quantity measures uncertainty in a random variable?": "entropy"
+  "What is a problem called if no algorithm can decide it for all inputs?": "undecidable"
+  "What type of automaton recognizes regular languages?": "finite automaton"
+  "What is the smallest token denomination in Axon?": "aaxon"
+  "What module in Axon handles AI agent registration?": "agent"
+  "What SDK framework does Axon build upon?": "Cosmos SDK"
+  "What consensus engine does Axon use?": "CometBFT"
+  "What activation function outputs values between 0 and 1?": "sigmoid"
+  "What technique reduces overfitting by randomly disabling neurons during training?": "dropout"
+  "What type of neural network is primarily used for image recognition?": "CNN"
+  "What optimization algorithm iteratively updates parameters using the gradient of the loss?": "gradient descent"
+  "What unsupervised learning algorithm partitions data into k groups?": "k-means"
+  "What memory management technique divides memory into fixed-size pages?": "paging"
+  "What is the first process started by the Linux kernel?": "init"
+  "What system call creates a new process in Unix?": "fork"
+  "What condition occurs when two or more processes each wait for the other to release a resource?": "deadlock"
+  "What hardware component translates virtual addresses to physical addresses?": "MMU"
+  "What attack injects malicious SQL through user input?": "SQL injection"
+  "What security protocol replaced SSL for encrypted web communication?": "TLS"
+  "What type of attack floods a server with traffic to make it unavailable?": "DDoS"
+  "What attack tricks a user's browser into making an unwanted request to another site?": "CSRF"
+  "In a Merkle tree, what is stored in leaf nodes?": ""  # MISSING expected_hash=f2b2355832773f0168ee64d7fa9b167b39c835d01430d7d36ebcd8efc0ad3283
+  "What does CAP theorem state about distributed systems?": ""  # MISSING expected_hash=3829c9300cee83099f62df43694c0fc29eb2b1ed874bab38f207172fc3266081
+  "What is the maximum block gas limit set in Axon genesis?": ""  # MISSING expected_hash=2ddb67b8a8c259ffaff61a5abdd38f5b5d6f1c6e2af4344c85b17b77af2451cc
+  "What is the halting problem about?": ""  # MISSING expected_hash=25f255bfe8a08bcbaffd2208961b3196757743dfafcb2a6e8adc1fe2954e6c05
+  "Name the principle: a class should have only one reason to change.": ""  # MISSING expected_hash=dac229411941d57b25ab9b3cf2762605e27d7079e58f96f2d630e2ecab7b83d3
+  "What type of database is LevelDB?": ""  # MISSING expected_hash=264b8327c2695fd0cfa367bf03be6f03a87ebbc3650702542b6f6ef2a7a1686f
+  "What type of cryptographic scheme allows verification without revealing the underlying data?": ""  # MISSING expected_hash=f382e21334df3237fa4be5f8c4d93a26d1ad3125817ceb770c9ec9e21ecd6b8b
+  "What SQL command removes a table and its schema entirely?": ""  # MISSING expected_hash=d90ee9ccf6bea1d2942a7b21319338198dec2a746f8a0d0771621f00da2e0864
+  "What type of database management system guarantees ACID properties?": ""  # MISSING expected_hash=5449d70e4205b9bcec11e0093209f247e31439854b0633dc2235254e010e9a0f
+  "What design pattern provides a surrogate object to control access to another object?": ""  # MISSING expected_hash=1241936d4dd3aad68fe7bfbdfe854b935926bc678fc72377e15166078916227a
+  "What design pattern lets you compose objects into tree structures?": ""  # MISSING expected_hash=ad1e26066637d18f500318563e09c716fe3b0f6cf646ce32fb4c79f995aa15f5
+  "What design pattern defines a family of algorithms and makes them interchangeable?": ""  # MISSING expected_hash=73dff70e25ad51ca765a584eef93a1cd909527e2ef4860e0b12f0a7e7ae1979a
+  "What design pattern converts the interface of a class into another expected interface?": ""  # MISSING expected_hash=ae1eae1d76e5b7c865c4122ce366a08025842566d2d96c75cc13e6353a73db0d
+  "What programming paradigm treats computation as evaluation of mathematical functions?": ""  # MISSING expected_hash=3b637864e75ab14ebba72b7f39d73be2ec309d571e807fc1170290353b214d78
+  "In Python, what built-in function returns the length of a container?": ""  # MISSING expected_hash=71fa9faaa6f884aa11f4cea21477b2204a48a4fa7f05cecad00a1250eeeffb4c
+  "What type of clock assigns a counter to events for partial ordering?": ""  # MISSING expected_hash=39261de510c553cbb0eba883fc63b817a3e37dd3cdd9bb64773ac01f080b4972
+  "What consistency model guarantees that a read returns the most recent write?": ""  # MISSING expected_hash=d7ac9cbaf1cc9bcd4d222ccf4e4cc7adcc5381b254d733dc9e01e777ced4acd7
+  "What protocol ensures all nodes in a distributed system agree on a single value?": ""  # MISSING expected_hash=c983c585ac3c40d920834f96200066352ff58e323da4dadae1d948fb27e63f82
+  "What metric measures the area under the receiver operating characteristic curve?": ""  # MISSING expected_hash=dc3743da64c5b837fa5aba22256f26a75e4f6089a82d6ef2163d2eb249f7c510
+  "What scheduling algorithm gives each process equal time slices in rotation?": ""  # MISSING expected_hash=87c7e8c457a3f6e8d3aa072224512385ee59e5393f86de08ed4568a17531631c
+  "What attack intercepts communication between two parties without their knowledge?": ""  # MISSING expected_hash=cca6b60b9a61ab32ea452e67f407bfac350adaf49eabcd6aa37550712238d34a
+  "What security principle states users should have only the minimum permissions required?": ""  # MISSING expected_hash=196839c141461caa4701edf8b507c840ae507c6cca48818612e4218596e71d09

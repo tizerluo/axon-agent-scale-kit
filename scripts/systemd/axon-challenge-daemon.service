@@ -1,0 +1,24 @@
+[Unit]
+Description=Axon AI Challenge Daemon (axond Cosmos SDK commit/reveal)
+After=network-online.target axon-heartbeat-daemon.service
+Wants=axon-heartbeat-daemon.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/axon-agent-scale
+ExecStart=/usr/bin/python3 /home/ubuntu/axon-agent-scale/scripts/axonctl.py \
+    challenge-daemon \
+    --state-file /home/ubuntu/axon-agent-scale/state/deploy_state.json \
+    --network /home/ubuntu/axon-agent-scale/configs/network.yaml \
+    --interval-sec 30 \
+    --max-cycles 0
+Restart=on-failure
+RestartSec=10
+Environment="PYTHONUNBUFFERED=1"
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=axon-challenge-daemon
+
+[Install]
+WantedBy=multi-user.target

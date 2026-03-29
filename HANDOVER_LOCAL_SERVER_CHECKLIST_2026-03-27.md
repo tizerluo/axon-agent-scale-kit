@@ -13,6 +13,24 @@
   - `configs/agents.yaml`
   - `configs/runtime/hosts.runtime.yaml`（gitignored，不入仓库）
 
+### ⚠️ 服务器版本严重落后（P0 风险）
+
+- 服务器运行目录：`/home/ubuntu/axon-agent-scale/`（**不是 git 仓库**，无法 git pull）
+- 服务器当前 commit：`47cab79`（**不在本地任何 git 历史**——可能来自 mac-mini 直接 scp 上传）
+- 本地最新 commit：`cfadb3e`（含 push guard + SSH key 路径修复）—— **尚未部署到服务器**
+- 影响：服务器行为可能与本地不符，新功能开发前应先同步最新代码到服务器
+- 建议：尽快通过 `scripts/release_deploy_verify.sh` 将 cfadb3e 部署到服务器
+
+### Python 版本对照
+
+| 环境 | Python 版本 | 备注 |
+|------|------------|------|
+| 本地 .venv | Python 3.11.14 | `.venv/bin/python` |
+| 服务器 | Python 3.12.3 | `/usr/bin/python3`，Ubuntu 24.04 默认 |
+| CI | Python 3.11 | GitHub Actions setup-python |
+
+注意：3.12 完全向后兼容 3.11，两侧均能运行 `axonctl.py`（使用 `int | None` 等 3.10+ 语法）。
+
 ## 2. 服务器与登录信息
 
 - 目标主机：`jakarta-node`
@@ -140,7 +158,7 @@
 - 确认 `axon-heartbeat-daemon.service` 为 active
 - 确认 `docker ps` 中 9 个 agent 容器都在
 - 跑一遍服务器侧 `lifecycle-report`
-- 抽查链上 `online_count` 是否 9/9
+- 抽查链上 `online_count` 是否 10/10
 - 确认本地与服务器 `axonctl.py` 版本一致（必要时比对 `sha256sum`）
 
 ## 12. 后续开发标准顺序（本地 / 服务器 / GitHub）
