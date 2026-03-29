@@ -15,9 +15,14 @@ missing=True 的条目需要人工补充答案。
 
 import argparse
 import re
-import sys
+import sys as _sys
 import urllib.request
 from pathlib import Path
+import os as _os as _os_mod
+_scrape_dir = _os_mod.path.dirname(_os_mod.path.abspath(__file__))
+if _scrape_dir not in _sys.path:
+    _sys.path.insert(0, _scrape_dir)
+del _scrape_dir, _sys, _os_mod
 
 import yaml
 

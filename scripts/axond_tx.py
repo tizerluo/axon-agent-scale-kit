@@ -19,6 +19,11 @@ Commit hash 算法（从 axon-chain/x/agent/keeper/msg_server.go 确认）：
 """
 
 from __future__ import annotations
+import sys as _sys, os as _os
+_axond_scripts_dir = _os.path.dirname(_os.path.abspath(__file__))
+if _axond_scripts_dir not in _sys.path:
+    _sys.path.insert(0, _axond_scripts_dir)
+del _axond_scripts_dir, _sys, _os
 
 import json
 import re

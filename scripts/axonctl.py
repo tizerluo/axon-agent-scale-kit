@@ -1,4 +1,10 @@
 from __future__ import annotations
+import sys as _sys, os as _os
+_scripts_dir = _os.path.dirname(_os.path.abspath(__file__))
+if _scripts_dir not in _sys.path:
+    _sys.path.insert(0, _scripts_dir)
+del _scripts_dir, _sys, _os
+
 from scripts import _shared_crypto
 
 import argparse
