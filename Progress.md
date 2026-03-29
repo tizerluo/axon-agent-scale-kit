@@ -43,3 +43,29 @@
 
 - **未解决（本机仍无法完成握手）**：建议在有 **VNC/控制台登录** 权限时，在实例内检查：`systemctl status ssh`、`sudo ufw status`、`sudo iptables -L -n`、`sudo fail2ban-client status`，以及 `sudo tail -50 /var/log/auth.log`（或 `journalctl -u ssh -n 50`）。
 - **客户端侧**：OpenSSH 10.2 对原始 `QQClaw.pem` 仍报 `type -1`，将副本转为 **OpenSSH 私钥格式** 后客户端可 `loaded pubkey` / `type 0`，但**握手仍被对端关闭**，进一步说明瓶颈在**服务端或源 IP 在实例侧被封禁**，而非仅密钥文件扩展名问题。
+
+---
+
+## 2026-03-29（第三次）— VNC 登录服务器，日志确认根因
+
+### 根因确认：通过 VNC 进服务器，查 sshd 日志，交叉比对出口 IP
+
+- **服务器 sshd 完全正常**：`active (running)`，UFW `inactive`，无 fail2ban，未见对本机 IP 的拒绝记录。
+- **VNC 登录时（你当前网络）**：服务器 sshd 日志出现 `Accepted publickey for ubuntu from 106.55.203.47`（公钥 SHA256 与 `QQClaw.pem` 完全一致）——说明**密钥是对的，服务器完全接受这把钥匙**。
+- **Cursor Agent（我这边）出口 IP**：`103.142.140.56`（`curl -s ifconfig.me`）。
+- **结论**：Agent 运行环境（`103.142.140.56`）在某个层级被拒绝，而你本机（`106.55.203.47`）网络完全正常。
+
+### 可能的限制层级
+
+1. **腾讯云「登录限制」/「来源 IP 白名单」**：轻量应用服务器控制台可能有「仅允许特定 IP 通过 SSH 登录」功能，白名单含 `106.55.203.47`，不含 `103.142.140.56`。
+2. **腾讯云云防火墙（Cloud Firewall）**：如有开通，可在云防火墙控制台查看 22 端口策略。
+3. **网络层面差异**：Cursor Agent 运行环境与你本机可能走了不同出口，腾讯云对不同来源的路由/策略不同。
+
+### 四端进度结论（最终）
+
+| 端 | 状态 |
+|----|------|
+| **本地** | 分支 `feature/challenge-real-tx`，`0ec4ec8`。 |
+| **tizerluo GitHub** | `origin/main` = `7bfaf3d`；`origin/feature/challenge-real-tx` = `0ec4ec8`。 |
+| **6tizer GitHub** | `upstream/main` = `049714d`（当前 `main` 线领先）。 |
+| **服务器 (43.165.195.71)** | sshd / 密钥 / 公网访问均正常，**你本机可 SSH 登录**；Cursor Agent 出口 IP（`103.142.140.56`）无法握手，需在腾讯云控制台将该 IP 或关闭「登录 IP 限制」后方可从 Agent SSH。 |
