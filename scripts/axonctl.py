@@ -1,4 +1,5 @@
 from __future__ import annotations
+from scripts import _shared_crypto
 
 import argparse
 import base64
@@ -220,7 +221,12 @@ def load_state(path: str) -> dict:
 def save_state(path: str, state: dict) -> None:
     state_path = Path(path)
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    text = json.dumps(state, ensure_ascii=False, indent=2)
+    # 原子写入：先写临时文件，再 rename 到目标路径。
+    # rename 在 POSIX 下是原子的（同一文件系统保证），进程崩溃不会留下半写文件。
+    tmp = state_path.with_suffix(".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, state_path)
 
 
 def rpc_chain_id(rpc_url: str, timeout_sec: int = 5) -> tuple[bool, int | None, str | None]:
@@ -301,23 +307,28 @@ def validate_challenge_settings(cfg: dict) -> list[str]:
     return errors
 
 
-def normalize_answer(text: str) -> str:
-    return re.sub(r"\s+", " ", (text or "").strip().lower())
+# ─── Hash 算法（来自 _shared_crypto，与 Axon keeper 源码保持一致）──────────────
+# normalize_answer / keeper_commit_hash / answer_hash 均来自共享模块，
+# 避免本地重复实现导致与链上逻辑分化。
 
-
-def keeper_commit_hash(cosmos_address: str, answer: str) -> str:
-    """
-    Keeper 在 reveal 时验证的 commit hash。
-    算法：SHA256(bech32_addr + ":" + raw_answer)
-    注意：不做任何 normalize，直接对原始 bytes 做 SHA256。
-    与 answer_hash() 不同——后者会对 answer 做 normalize 后再 SHA256。
-    keeper 在 reveal 时用同样的算法重新计算并比对。
-    """
-    return hashlib.sha256(f"{cosmos_address}:{answer}".encode("utf-8")).hexdigest()
+# keeper_commit_hash: SHA256(bech32_addr + ":" + raw_answer)，不做 normalize
+keeper_commit_hash = _shared_crypto.keeper_commit_hash
 
 
 def answer_hash(text: str) -> str:
-    return hashlib.sha256(normalize_answer(text).encode("utf-8")).hexdigest()
+    """
+    AnswerHash（challengePool 中的 hash）使用的算法。
+    keeper 在 evaluate 时：revealHash = SHA256(normalizeAnswer(resp.RevealData))
+    normalizeAnswer 等价于 _shared_crypto.go_normalize：去掉所有空格/tab/换行，小写。
+    """
+    return _shared_crypto.keeper_answer_hash(text)
+
+
+def normalize_answer(text: str) -> str:
+    """
+    兼容别名，内部已不使用，统一使用 _shared_crypto.go_normalize。
+    """
+    return _shared_crypto.go_normalize(text)
 
 
 def fetch_challenge_pool(bank_source_url: str) -> list[dict]:
@@ -345,6 +356,36 @@ def get_current_block(rpc_url: str) -> int:
     with request.urlopen(req, timeout=10) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     return int(data["result"], 16)
+
+
+def get_current_block_healthy(network_cfg: dict) -> int:
+    """
+    获取当前区块号，同时验证 RPC 健康度。
+    如果配置了 fallback_rpc_url，对比两个端点的返回值：
+    - 差值 ≤ 5 块：主端点可用，返回主端点值
+    - 差值 > 5 块：主端点可能滞后，警告并仍返回主端点值（保守）
+    - 主端点失败：降级到 fallback，返回 fallback 值
+    """
+    primary = network_cfg.get("rpc_url", "")
+    fallback = network_cfg.get("fallback_rpc_url", "")
+    try:
+        block = get_current_block(primary)
+        if fallback:
+            try:
+                fallback_block = get_current_block(fallback)
+                diff = abs(block - fallback_block)
+                if diff > 5:
+                    logging.warning(
+                        "RPC freshness warning: primary=%d, fallback=%d (diff=%d). "
+                        "Primary RPC may be stale.", block, fallback_block, diff
+                    )
+            except Exception:
+                pass  # fallback 查询失败不影响主端点
+        return block
+    except Exception:
+        if fallback:
+            return get_current_block(fallback)
+        raise
 
 
 def mask_secret(value: str) -> str:
@@ -1121,7 +1162,7 @@ def challenge_gate_check(state_file: str, network: str, agent: str) -> int:
         "phase": "unknown",
     }
     try:
-        current_block = get_current_block(network_cfg["rpc_url"])
+        current_block = get_current_block_healthy(network_cfg)
         window_blocks = int(cfg.get("ai_challenge_window_blocks", 50))
         checks["current_block"] = current_block
 
@@ -1225,7 +1266,7 @@ def challenge_run_once(state_file: str, network: str, agent: str) -> int:
         print(json.dumps({"ok": False, "error": "challenge pool is empty"}, ensure_ascii=False, indent=2))
         return 1
     bank = load_answer_bank(cfg.get("answer_bank_file", "configs/challenge_answers.yaml"))
-    current_block = get_current_block(network_cfg["rpc_url"])
+    current_block = get_current_block_healthy(network_cfg)
     idx = current_block % len(pool)
     item = pool[idx]
     question = item["question"]
@@ -2468,7 +2509,7 @@ def lifecycle_report(state_file: str, network: str, request_id: str | None) -> i
         return 1
     current_block = None
     try:
-        current_block = get_current_block(network_cfg.get("rpc_url", ""))
+        current_block = get_current_block_healthy(network_cfg)
     except Exception:
         current_block = None
     items = []
@@ -2520,7 +2561,7 @@ def lifecycle_repair(state_file: str, network: str, request_id: str | None) -> i
         return 1
     current_block = None
     try:
-        current_block = get_current_block(network_cfg.get("rpc_url", ""))
+        current_block = get_current_block_healthy(network_cfg)
     except Exception:
         current_block = None
     repaired = []

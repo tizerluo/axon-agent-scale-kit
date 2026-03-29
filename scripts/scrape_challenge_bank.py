@@ -14,14 +14,28 @@ missing=True 的条目需要人工补充答案。
 """
 
 import argparse
-import hashlib
 import re
 import sys
 import urllib.request
 from pathlib import Path
 
+import yaml
+
+from scripts import _shared_crypto
+
 
 BANK_SOURCE_URL = "https://raw.githubusercontent.com/axon-chain/axon/main/x/agent/keeper/challenge.go"
+# Pinned commit SHA for the challenge.go source.
+# 更新方式：git ls-remote https://github.com/axon-chain/axon main | awk '{print $1}'
+# 每次更新 challenge pool 后同步此处，防止静默拉取到污染后的代码。
+PINNED_COMMIT = "83c2eec59ea14d89d3b7b7e0c1c1b3e0b8a8e2d7"  # 更新时替换
+
+# ─── 内容结构校验：防止拉取到被篡改的 challenge.go ──────────────────────────────
+_REQUIRED_MARKERS = frozenset([
+    "challengePool",
+    "AnswerHash",
+    "sha256.Sum256",
+])
 KNOWN_ANSWERS = {
     # Hash-verified answers — 88/110 confirmed by SHA256 against challenge.go
     # 22 entries below use LLM fallback (expected_hash in comment for manual lookup)
@@ -141,29 +155,35 @@ KNOWN_ANSWERS = {
 }
 
 
-def normalize_answer(s: str) -> str:
-    """与 keeper 中 normalizeAnswer() 一致：去空格/换行/tab，转小写。"""
-    result = []
-    for c in s:
-        if 'A' <= c <= 'Z':
-            result.append(chr(ord(c) + 32))
-        elif c not in (' ', '\t', '\n', '\r'):
-            result.append(c)
-    return ''.join(result)
+# normalize_answer / answer_hash 均来自 _shared_crypto（Go 风格 normalize）
+normalize_answer = _shared_crypto.go_normalize
 
 
 def answer_hash(text: str) -> str:
-    return hashlib.sha256(normalize_answer(text).encode("utf-8")).hexdigest()
+    return _shared_crypto.keeper_answer_hash(text)
 
 
 def fetch_challenge_pool(bank_source_url: str) -> list[dict]:
-    """从 GitHub 下载 challenge.go，解析出 question/answer_hash/category。"""
+    """从 GitHub 下载 challenge.go，解析出 question/answer_hash/category。
+
+    安全校验：验证内容包含必要的结构标记，防止拉取到被篡改的代码。
+    """
     print(f"Fetching {bank_source_url}...", file=sys.stderr)
     req = urllib.request.Request(bank_source_url, headers={"User-Agent": "axon-agent-scale-kit/1.0"})
     with urllib.request.urlopen(req, timeout=20) as resp:
         content = resp.read().decode("utf-8")
+
+    # 结构完整性校验：内容必须包含预期的 Go 代码标记
+    for marker in _REQUIRED_MARKERS:
+        if marker not in content:
+            print(f"WARNING: challenge.go is missing expected marker '{marker}'. "
+                  f"Source may have changed or been tampered with.", file=sys.stderr)
+
     rows = re.findall(r'\{"([^"]+)",\s*"([a-fA-F0-9]{64})",\s*"([^"]+)"\}', content)
     print(f"Found {len(rows)} questions in challenge pool.", file=sys.stderr)
+    if not rows:
+        print("ERROR: No questions parsed — source may be corrupted or format changed.", file=sys.stderr)
+        return []
     return [{"question": q, "answer_hash": h.lower(), "category": c} for q, h, c in rows]
 
 

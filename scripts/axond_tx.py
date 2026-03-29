@@ -20,7 +20,6 @@ Commit hash 算法（从 axon-chain/x/agent/keeper/msg_server.go 确认）：
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import subprocess
@@ -29,6 +28,8 @@ from pathlib import Path
 from urllib import request
 
 import yaml
+
+from scripts import _shared_crypto
 
 
 # ─── 常量 ─────────────────────────────────────────────────────────────────────
@@ -40,42 +41,14 @@ COSMOS_BROADCAST_URL = "https://mainnet-api.axonchain.ai/axon/public/v1/txs/broa
 MAX_REVEAL_BYTES = 512
 
 
-# ─── Hash 算法 ───────────────────────────────────────────────────────────────
+# ─── Hash 算法（来自 _shared_crypto，与 Axon keeper 源码保持一致）──────────────
+# keeper_commit_hash, keeper_answer_hash, _go_normalize 均来自共享模块
+# 各模块直接引用 _shared_crypto，避免重复实现导致分化
 
-def keeper_commit_hash(cosmos_address: str, answer: str) -> str:
-    """
-    Keeper 在 reveal 时验证的 commit hash。
-    算法：SHA256(bech32_addr + ":" + raw_answer)
-    注意：不做任何 normalize，直接对原始 bytes 做 SHA256。
-    与 axonctl.py 中的 answer_hash() 不同——后者会对 answer 做 normalize，
-    用于验证 answer 与 pool 中的 AnswerHash 是否一致（那是 simulate 模式的逻辑）。
-    """
-    return hashlib.sha256(f"{cosmos_address}:{answer}".encode("utf-8")).hexdigest()
-
-
-def keeper_answer_hash(answer: str) -> str:
-    """
-    AnswerHash（challengePool 中的 hash）使用的算法。
-    keeper 在 evaluate 时：
-      revealHash = SHA256(normalizeAnswer(resp.RevealData))
-    这里 normalizeAnswer 去掉所有空格/Tab/换行，转小写。
-    """
-    normalized = _go_normalize(answer)
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
-def _go_normalize(s: str) -> str:
-    """
-    等价于 keeper 中的 normalizeAnswer()。
-    去掉所有空格、Tab、换行，小写。
-    """
-    result = []
-    for c in s:
-        if c >= 'A' and c <= 'Z':
-            result.append(chr(ord(c) + 32))
-        elif c not in (' ', '\t', '\n', '\r'):
-            result.append(c)
-    return ''.join(result)
+# 直接引用（供内部及外部调用方使用）
+keeper_commit_hash = _shared_crypto.keeper_commit_hash
+keeper_answer_hash = _shared_crypto.keeper_answer_hash
+_go_normalize = _shared_crypto.go_normalize  # 向后兼容别名
 
 
 # ─── axond subprocess 封装 ──────────────────────────────────────────────────
@@ -416,7 +389,10 @@ def wait_for_tx(tx_hash: str, rest_url: str = COSMOS_BROADCAST_URL,
     while time.time() - start < max_wait:
         status = query_tx_status(tx_hash, rest_url)
         code = status.get("code", -1)
-        if code == 0:
+        height = status.get("height", 0)
+        if code == 0 and height > 0:
+            # code==0 表示交易执行成功；height>0 表示进入了已提交的区块。
+            # 两者都必须满足：code==0 的 Pending 交易在链分叉时可能被丢弃。
             return True, "confirmed"
         if code == -1:
             # 查询失败，继续等
@@ -594,11 +570,12 @@ class AxondClient:
         返回 (success, tx_hash_or_error)。
         注意：answer 必须是原始答案（512 字节以内），不做 normalize。
         """
-        # 长度检查
+        # 长度检查：答案超长时拒绝，不做静默截断。
+        # 静默截断会导致 reveal 时传给链上的答案与 commit 阶段计算的 commit_hash 不匹配，
+        # 链上验证必败。调用方应在发交易前检查答案长度。
         answer_bytes = answer.encode("utf-8")
         if len(answer_bytes) > MAX_REVEAL_BYTES:
-            truncated = answer_bytes[:MAX_REVEAL_BYTES - 3].decode("utf-8", errors="ignore")
-            answer = truncated
+            return False, f"answer_too_long:{ len(answer_bytes)} bytes (max {MAX_REVEAL_BYTES})"
 
         ok, msg = self.ensure_key(agent_name)
         if not ok:
