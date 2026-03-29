@@ -387,10 +387,17 @@ run(
     check=False
 )
 
-# 13. 清理旧快照（保留最近 N 个）
+# 13. 清理旧快照（保留最近 N 个，排除当前新部署的）
 releases_dir = os.path.join(REMOTE_DIR, "releases")
+current_link = os.path.join(REMOTE_DIR, "current")
+# 解析 symlink，得到当前激活的 release 目录名（避免清理正在运行的版本）
+try:
+    current_real = os.path.basename(os.path.realpath(current_link))
+except Exception:
+    current_real = None
 all_releases = sorted(
-    [d for d in os.listdir(releases_dir) if os.path.isdir(os.path.join(releases_dir, d))],
+    [d for d in os.listdir(releases_dir) if os.path.isdir(os.path.join(releases_dir, d))
+     and d != RELEASE_NAME and d != current_real],
     reverse=True
 )
 for old in all_releases[KEEP_RELEASES:]:
@@ -601,8 +608,14 @@ run(
 
 # 13. 清理旧快照
 releases_dir = os.path.join(REMOTE_DIR, "releases")
+current_link = os.path.join(REMOTE_DIR, "current")
+try:
+    current_real = os.path.basename(os.path.realpath(current_link))
+except Exception:
+    current_real = None
 all_releases = sorted(
-    [d for d in os.listdir(releases_dir) if os.path.isdir(os.path.join(releases_dir, d))],
+    [d for d in os.listdir(releases_dir) if os.path.isdir(os.path.join(releases_dir, d))
+     and d != RELEASE_NAME and d != current_real],
     reverse=True
 )
 for old in all_releases[KEEP_RELEASES:]:

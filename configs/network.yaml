@@ -22,8 +22,10 @@ cosmos:
   chain_id: "axon_8210-1"
   # Axon 自定义广播 API（axond tx 底层调用此端点）
   rest_url: "https://mainnet-api.axonchain.ai"
-  # axond 密钥环目录（axond keys import 的 --keyring-dir 参数）
-  keyring_dir: "~/.axond"
+  # axond 密钥环目录（容器内的 keyring-test 通过 docker cp 复制到 ubuntu 可访问的位置）
+  keyring_dir: "/home/ubuntu/.axond"
+  # keyring backend：必须与 keys import 时一致（test）
+  keyring_backend: "test"
   # 广播模式：sync（推荐）/ async / block
   broadcast_mode: "sync"
 # ─── challenge 配置 ───────────────────────────────────────────────────────────
@@ -37,7 +39,7 @@ challenge:
   # execution_mode:
   #   "simulate"  — default. commit/reveal tx are constructed but NOT signed or submitted.
   #                 Safe for testing. State is written to deploy_state.json but no on-chain effect.
-  execution_mode: "simulate"
+  execution_mode: "command"
   # command 模式模板（axond_tx.py 使用这些模板构建 shell 命令）
   # 将以下占位符替换为实际值：
   #   {key_name}   — axond keyring 中的密钥名（agent name）
