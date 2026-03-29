@@ -26,7 +26,7 @@ challenge:
   ai_challenge_window_blocks: 50
   bank_source_url: "https://raw.githubusercontent.com/axon-chain/axon/main/x/agent/keeper/challenge.go"
   answer_bank_file: "configs/challenge_answers.yaml"
-  execution_mode: "simulate"
+  execution_mode: "command"
   openrouter:
     api_base: "https://openrouter.ai/api/v1/chat/completions"
     model_id: ""

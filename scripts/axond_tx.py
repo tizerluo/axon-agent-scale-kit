@@ -268,7 +268,8 @@ def query_tx_status(tx_hash: str, rest_url: str = COSMOS_BROADCAST_URL) -> dict:
 
 def build_submit_tx(agent_name: str, epoch: int, commit_hash: str,
                     chain_id: str, keyring_dir: str,
-                    broadcast_mode: str = "sync") -> list[str]:
+                    broadcast_mode: str = "sync",
+                    keyring_backend: str = "test") -> list[str]:
     """
     构建 axond submit-ai-challenge-response 命令参数。
     """
@@ -279,7 +280,7 @@ def build_submit_tx(agent_name: str, epoch: int, commit_hash: str,
         "--epoch", str(epoch),
         "--chain-id", chain_id,
         "--keyring-dir", str(Path(keyring_dir).expanduser()),
-        "--keyring-backend", "file",
+        "--keyring-backend", keyring_backend,
         "--broadcast-mode", broadcast_mode,
         "--yes",
     ]
@@ -287,7 +288,8 @@ def build_submit_tx(agent_name: str, epoch: int, commit_hash: str,
 
 def build_reveal_tx(agent_name: str, epoch: int, reveal_data: str,
                     chain_id: str, keyring_dir: str,
-                    broadcast_mode: str = "sync") -> list[str]:
+                    broadcast_mode: str = "sync",
+                    keyring_backend: str = "test") -> list[str]:
     """
     构建 axond reveal-ai-challenge-response 命令参数。
     """
@@ -298,7 +300,7 @@ def build_reveal_tx(agent_name: str, epoch: int, reveal_data: str,
         "--epoch", str(epoch),
         "--chain-id", chain_id,
         "--keyring-dir", str(Path(keyring_dir).expanduser()),
-        "--keyring-backend", "file",
+        "--keyring-backend", keyring_backend,
         "--broadcast-mode", broadcast_mode,
         "--yes",
     ]
@@ -432,6 +434,9 @@ class AxondClient:
             "keyring_dir", "~/.axond")
         self.broadcast_mode = network_cfg.get("cosmos", {}).get(
             "broadcast_mode", "sync")
+        # 密钥用 test backend 导入，tx 也必须用 test
+        self.keyring_backend = network_cfg.get("cosmos", {}).get(
+            "keyring_backend", "test")
         self.state_file = state_file
         self._state: dict | None = None
         self._evm_addr_cache: dict[str, str] = {}
@@ -505,7 +510,7 @@ class AxondClient:
         return ensure_axond_key(
             agent_name, pk,
             keyring_dir=self.keyring_dir,
-            keyring_backend="file",
+            keyring_backend=self.keyring_backend,
         )
 
     # ── Challenge 查询 ──────────────────────────────────────────────────────
@@ -544,6 +549,7 @@ class AxondClient:
             chain_id=self.chain_id,
             keyring_dir=self.keyring_dir,
             broadcast_mode=self.broadcast_mode,
+            keyring_backend=self.keyring_backend,
         )
 
         ok, tx_or_err, raw = submit_tx(args, dry_run=dry_run)
@@ -592,6 +598,7 @@ class AxondClient:
             chain_id=self.chain_id,
             keyring_dir=self.keyring_dir,
             broadcast_mode=self.broadcast_mode,
+            keyring_backend=self.keyring_backend,
         )
 
         ok, tx_or_err, raw = submit_tx(args, dry_run=dry_run)
