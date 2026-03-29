@@ -25,3 +25,21 @@
 | **tizerluo GitHub** | `origin/main` = `7bfaf3d`（落后 6tizer `main` 3 个提交）；`origin/feature/challenge-real-tx` = `0ec4ec8`（与本地该分支一致）。 |
 | **6tizer GitHub** | `upstream/main` = `049714d`（当前 **`main` 线领先** tizerluo 的 `main`）。 |
 | **服务器 (43.165.195.71)** | **本次未能连接**，线上代码版本**未知**；历史交接文档曾记载线上为 tar/scp 部署、可能与 Git 历史不一致，需登录后单独核对。 |
+
+---
+
+## 2026-03-29（第二次）— 用户确认腾讯云防火墙放行 22 后复测 SSH
+
+### 我们实现了哪些功能？
+
+- 在用户确认 **腾讯云轻量防火墙已对「Linux 登录(22)」允许、来源为所有 IPv4** 后，再次使用文档密钥执行 `ssh` 与 `ssh -vvv` 复测，并用 Python `socket.recv` 观察是否在收到任何字节前对端即关闭连接。
+
+### 我们遇到了哪些错误？
+
+- **现象不变**：`kex_exchange_identification: Connection closed by remote host`；在发送客户端 `SSH-2.0-OpenSSH_10.2` 版本串后，**仍读不到服务端 SSH 欢迎行**。
+- **补充观测**：纯 TCP 连接后 `recv` 得到 **空字节**（对端在未发送 SSH banner 的情况下结束连接），说明问题发生在 **云外防火墙之后的链路**（实例内 `sshd`/系统防火墙/fail2ban/安全组件等），与「控制台 22 放行」可以**同时成立**——控制台只保证流量到达实例网卡，**不保证**实例内进程会回复 SSH 协议。
+
+### 我们是如何解决这些错误的？
+
+- **未解决（本机仍无法完成握手）**：建议在有 **VNC/控制台登录** 权限时，在实例内检查：`systemctl status ssh`、`sudo ufw status`、`sudo iptables -L -n`、`sudo fail2ban-client status`，以及 `sudo tail -50 /var/log/auth.log`（或 `journalctl -u ssh -n 50`）。
+- **客户端侧**：OpenSSH 10.2 对原始 `QQClaw.pem` 仍报 `type -1`，将副本转为 **OpenSSH 私钥格式** 后客户端可 `loaded pubkey` / `type 0`，但**握手仍被对端关闭**，进一步说明瓶颈在**服务端或源 IP 在实例侧被封禁**，而非仅密钥文件扩展名问题。
