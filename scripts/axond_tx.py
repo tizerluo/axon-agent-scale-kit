@@ -277,13 +277,17 @@ def build_submit_tx(agent_name: str, epoch: int, commit_hash: str,
                     broadcast_mode: str = "sync",
                     keyring_backend: str = "test") -> list[str]:
     """
-    构建 axond submit-ai-challenge-response 命令参数。
+    构建 axond submit-challenge 命令参数。
+
+    axond tx agent submit-challenge [epoch] [answer]
+    answer = commit_hash (sha256 十六进制)
+    --from 指定签名者（axond keyring 中的密钥名）
     """
     return [
-        "tx", "agent", "submit-ai-challenge-response",
-        agent_name,               # sender (axond key name)
-        commit_hash,              # commit_hash (hex)
-        "--epoch", str(epoch),
+        "tx", "agent", "submit-challenge",
+        str(epoch),              # positional: epoch
+        commit_hash,             # positional: answer (= commit_hash hex)
+        "--from", agent_name,     # signer key name in keyring
         "--chain-id", chain_id,
         "--keyring-dir", str(Path(keyring_dir).expanduser()),
         "--keyring-backend", keyring_backend,
@@ -297,13 +301,17 @@ def build_reveal_tx(agent_name: str, epoch: int, reveal_data: str,
                     broadcast_mode: str = "sync",
                     keyring_backend: str = "test") -> list[str]:
     """
-    构建 axond reveal-ai-challenge-response 命令参数。
+    构建 axond reveal-challenge 命令参数。
+
+    axond tx agent reveal-challenge [epoch] [answer]
+    answer = 原始答案文本
+    --from 指定签名者（axond keyring 中的密钥名）
     """
     return [
-        "tx", "agent", "reveal-ai-challenge-response",
-        agent_name,               # sender (axond key name)
-        reveal_data,              # 原始答案（512 字节以内）
-        "--epoch", str(epoch),
+        "tx", "agent", "reveal-challenge",
+        str(epoch),              # positional: epoch
+        reveal_data,             # positional: answer (= raw answer text)
+        "--from", agent_name,    # signer key name in keyring
         "--chain-id", chain_id,
         "--keyring-dir", str(Path(keyring_dir).expanduser()),
         "--keyring-backend", keyring_backend,

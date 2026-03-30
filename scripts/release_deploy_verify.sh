@@ -355,6 +355,23 @@ run(["sudo", "systemctl", "is-active", SERVICE_NAME], check=False)
 run(["sudo", "systemctl", "restart", SERVICE_NAME], check=True)
 
 if DEPLOY_CHALLENGE == "1":
+    log("writing axon-challenge-daemon override")
+    CHALLENGE_DROPIN = "/etc/systemd/system/axon-challenge-daemon.service.d/override.conf"
+    run(["sudo", "mkdir", "-p", "/etc/systemd/system/axon-challenge-daemon.service.d"], check=False)
+    CHALLENGE_EXEC = (
+        "[Service]" + chr(10) +
+        "Environment=PYTHONPATH=" + current_link + chr(10) +
+        "WorkingDirectory=" + REMOTE_DIR + chr(10) +
+        "ExecStart=" + chr(10) +
+        "ExecStart=/usr/bin/python3 " + current_link + "/scripts/axonctl.py challenge-daemon " +
+        "--state-file " + REMOTE_DIR + "/state/deploy_state.json " +
+        "--network " + current_link + "/configs/network.yaml " +
+        "--interval-sec 30 " +
+        "--max-cycles 0" + chr(10)
+    )
+    run(["sudo", "tee", CHALLENGE_DROPIN], input=CHALLENGE_EXEC.encode(), check=False)
+    log("systemd override written: " + CHALLENGE_DROPIN)
+    run(["sudo", "systemctl", "daemon-reload"], check=False)
     log("restarting axon-challenge-daemon")
     run(["sudo", "systemctl", "is-active", "axon-challenge-daemon"], check=False)
     run(["sudo", "systemctl", "restart", "axon-challenge-daemon"], check=True)
@@ -574,6 +591,23 @@ run(["sudo", "systemctl", "is-active", SERVICE_NAME], check=False)
 run(["sudo", "systemctl", "restart", SERVICE_NAME], check=True)
 
 if DEPLOY_CHALLENGE == "1":
+    log("writing axon-challenge-daemon override")
+    CHALLENGE_DROPIN = "/etc/systemd/system/axon-challenge-daemon.service.d/override.conf"
+    run(["sudo", "mkdir", "-p", "/etc/systemd/system/axon-challenge-daemon.service.d"], check=False)
+    CHALLENGE_EXEC = (
+        "[Service]" + chr(10) +
+        "Environment=PYTHONPATH=" + current_link + chr(10) +
+        "WorkingDirectory=" + REMOTE_DIR + chr(10) +
+        "ExecStart=" + chr(10) +
+        "ExecStart=/usr/bin/python3 " + current_link + "/scripts/axonctl.py challenge-daemon " +
+        "--state-file " + REMOTE_DIR + "/state/deploy_state.json " +
+        "--network " + current_link + "/configs/network.yaml " +
+        "--interval-sec 30 " +
+        "--max-cycles 0" + chr(10)
+    )
+    run(["sudo", "tee", CHALLENGE_DROPIN], input=CHALLENGE_EXEC.encode(), check=False)
+    log("systemd override written: " + CHALLENGE_DROPIN)
+    run(["sudo", "systemctl", "daemon-reload"], check=False)
     log("restarting axon-challenge-daemon")
     run(["sudo", "systemctl", "is-active", "axon-challenge-daemon"], check=False)
     run(["sudo", "systemctl", "restart", "axon-challenge-daemon"], check=True)

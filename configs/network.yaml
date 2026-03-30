@@ -31,7 +31,7 @@ cosmos:
 # ─── challenge 配置 ───────────────────────────────────────────────────────────
 challenge:
   enabled: true
-  validator_required: true
+  validator_required: false
   non_llm_first: true
   ai_challenge_window_blocks: 50
   bank_source_url: "https://raw.githubusercontent.com/axon-chain/axon/main/x/agent/keeper/challenge.go"

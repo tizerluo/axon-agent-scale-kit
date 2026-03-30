@@ -7,10 +7,11 @@ Wants=axon-heartbeat-daemon.service
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu/axon-agent-scale
+Environment=PYTHONPATH=/home/ubuntu/axon-agent-scale/current
 ExecStart=/usr/bin/python3 /home/ubuntu/axon-agent-scale/scripts/axonctl.py \
     challenge-daemon \
     --state-file /home/ubuntu/axon-agent-scale/state/deploy_state.json \
-    --network /home/ubuntu/axon-agent-scale/configs/network.yaml \
+    --network /home/ubuntu/axon-agent-scale/current/configs/network.yaml \
     --interval-sec 30 \
     --max-cycles 0
 Restart=on-failure
