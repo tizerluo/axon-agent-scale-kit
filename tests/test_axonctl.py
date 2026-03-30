@@ -715,7 +715,6 @@ class AxonCtlRegressionTests(unittest.TestCase):
         self.assertEqual(after["agents"]["agent-001"]["last_heartbeat_tx"], "0xabc")
         self.assertEqual(after["agents"]["agent-001"]["last_heartbeat_block"], 123456)
 
-    @mock.patch("axonctl.NonceManager", mock.MagicMock())
     @mock.patch("axonctl._submit_heartbeat_tx", return_value=(True, {"attempts": 1, "tx_hash": "0xdef", "block_height": 223456, "latency_ms": 60}))
     @mock.patch("axonctl.request.urlopen", side_effect=RuntimeError("skip block query"))
     def test_heartbeat_batch_with_request_id(self, _urlopen_mock: mock.Mock, _submit_mock: mock.Mock) -> None:

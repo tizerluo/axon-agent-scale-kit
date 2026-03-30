@@ -123,64 +123,6 @@ REGISTER_ABI = [
         "type": "function",
     },
 ]
-NONCE_LOCK_DIR = "/tmp/axon-nonce"
-Path(NONCE_LOCK_DIR).mkdir(exist_ok=True)
-
-
-class NonceManager:
-    """
-    基于文件的分布式锁，确保同一 agent 同时只有一笔 pending tx。
-    解决 heartbeat-daemon 和 challenge-daemon 并发时 nonce 冲突。
-
-    使用方式：
-        with NonceManager(agent):
-            ok, tx = _submit_heartbeat_tx(...)
-            ...
-
-    锁文件：{NONCE_LOCK_DIR}/{agent}.lock
-    """
-
-    def __init__(self, agent: str, timeout: int = 30):
-        self.agent = str(agent)
-        self.timeout = timeout
-        self._lock_fd: int | None = None
-        self._lock_path = Path(NONCE_LOCK_DIR) / f"{self.agent}.lock"
-
-    def acquire(self) -> bool:
-        """尝试获取锁，超时返回 False。"""
-        start = time.time()
-        while True:
-            try:
-                self._lock_fd = os.open(str(self._lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                # 写入当前进程 PID，方便调试
-                os.write(self._lock_fd, f"{os.getpid()}".encode())
-                os.close(self._lock_fd)
-                self._lock_fd = None
-                return True
-            except FileExistsError:
-                pass
-            except OSError:
-                return False
-            if time.time() - start >= self.timeout:
-                return False
-            time.sleep(0.1)
-
-    def release(self) -> None:
-        """释放锁。"""
-        try:
-            self._lock_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-    def __enter__(self) -> "NonceManager":
-        if not self.acquire():
-            raise RuntimeError(f"NonceManager: failed to acquire lock for agent={self.agent} within {self.timeout}s")
-        return self
-
-    def __exit__(self, *args) -> None:
-        self.release()
-
-
 DEFAULT_HEARTBEAT = {
     "interval_blocks": 100,
     "timeout_blocks": 720,
@@ -1004,19 +946,14 @@ def heartbeat_once(state_file: str, network: str, agent: str, max_retries: int |
     if not wallet:
         print(json.dumps({"ok": False, "error": f"wallet not found for {agent}"}, ensure_ascii=False, indent=2))
         return 1
-    try:
-        with NonceManager(agent):
-            ok, tx = _submit_heartbeat_tx(
-                rpc_url=rpc_url,
-                chain_id=chain_id,
-                private_key=wallet.get("private_key", ""),
-                max_retries=retries,
-                backoff_seconds=backoff,
-                receipt_timeout_sec=receipt_timeout,
-            )
-    except RuntimeError as e:
-        print(json.dumps({"ok": False, "error": str(e), "agent": agent}, ensure_ascii=False, indent=2))
-        return 1
+    ok, tx = _submit_heartbeat_tx(
+        rpc_url=rpc_url,
+        chain_id=chain_id,
+        private_key=wallet.get("private_key", ""),
+        max_retries=retries,
+        backoff_seconds=backoff,
+        receipt_timeout_sec=receipt_timeout,
+    )
     if ok:
         state.setdefault("agents", {}).setdefault(agent, {})
         state["agents"][agent]["heartbeat_at"] = now_ts()
@@ -1077,15 +1014,14 @@ def heartbeat_batch(state_file: str, network: str, request_id: str | None, max_r
     failed = []
     for name in targets:
         before_tx = load_state(state_file).get("agents", {}).get(name, {}).get("last_heartbeat_tx")
-        with NonceManager(name, timeout=60):
-            code = heartbeat_once(
-                state_file=state_file,
-                network=network,
-                agent=name,
-                max_retries=max_retries,
-                backoff_seconds=backoff_seconds,
-                receipt_timeout_sec=receipt_timeout_sec,
-            )
+        code = heartbeat_once(
+            state_file=state_file,
+            network=network,
+            agent=name,
+            max_retries=max_retries,
+            backoff_seconds=backoff_seconds,
+            receipt_timeout_sec=receipt_timeout_sec,
+        )
         current = load_state(state_file).get("agents", {}).get(name, {})
         after_tx = current.get("last_heartbeat_tx")
         if code == 0 and after_tx and after_tx != before_tx:
@@ -1358,8 +1294,6 @@ def challenge_run_once(state_file: str, network: str, agent: str) -> int:
         source = "non_llm"
 
         # ── command 模式：发送真实 Cosmos SDK 交易 ─────────────────────────────────
-        # 调用方（challenge_batch / repair_daemon / CLI）负责持 NonceManager，
-        # 确保同一 agent 的 commit+reveal 与 heartbeat-daemon 之间无并发竞争窗口。
         epoch = current_challenge.get("epoch", 0)
         deadline_block = current_challenge.get("deadline_block", 0)
         window_blocks = int(cfg.get("ai_challenge_window_blocks", 50))
@@ -1502,11 +1436,7 @@ def challenge_batch(state_file: str, network: str, request_id: str | None) -> in
     passed = []
     failed = []
     for name in targets:
-        # NonceManager 确保同一 agent 的 challenge_run_once 完整执行期间，
-        # heartbeat-daemon 无法插进来产生 nonce 冲突。
-        # 每个 agent 持独立锁，跨 agent 之间互不阻塞。
-        with NonceManager(name, timeout=60):
-            code = challenge_run_once(state_file, network, name)
+        code = challenge_run_once(state_file, network, name)
         if code == 0:
             passed.append(name)
         else:
@@ -1531,7 +1461,6 @@ def challenge_daemon(
     """
     AI Challenge daemon：定期调用 challenge_batch。
 
-    使用 NonceManager 防止与 heartbeat-daemon 并发竞争同一 agent 的 nonce。
     通过 execution_mode="command" 触发真实链上提交。
     """
     if interval_sec < 1:
@@ -2648,18 +2577,14 @@ def lifecycle_repair(state_file: str, network: str, request_id: str | None) -> i
             item["service_active"] = True
             actions_done.append("restart_service")
         if "send_heartbeat" in health["actions"]:
-            # 心跳和 challenge 使用同一把锁，防止 repair_daemon 内部对同一 agent
-            # 先 heartbeat 后 challenge 时，heartbeat-daemon 外部插进来产生 nonce 冲突。
-            with NonceManager(name, timeout=60):
-                code = heartbeat_once(state_file, network, name, None, None, None)
+            code = heartbeat_once(state_file, network, name, None, None, None)
             if code == 0:
                 actions_done.append("send_heartbeat")
             else:
                 failed.append({"agent": name, "action": "send_heartbeat"})
                 continue
         if "run_challenge" in health["actions"]:
-            with NonceManager(name, timeout=60):
-                code = challenge_run_once(state_file, network, name)
+            code = challenge_run_once(state_file, network, name)
             if code == 0:
                 actions_done.append("run_challenge")
             else:
@@ -3156,8 +3081,7 @@ def main() -> int:
     if args.cmd == "challenge-gate-check":
         return challenge_gate_check(args.state_file, args.network, args.agent)
     if args.cmd == "challenge-run-once":
-        with NonceManager(args.agent, timeout=60):
-            return challenge_run_once(args.state_file, args.network, args.agent)
+        return challenge_run_once(args.state_file, args.network, args.agent)
     if args.cmd == "challenge-batch":
         return challenge_batch(args.state_file, args.network, args.request_id)
     if args.cmd == "challenge-daemon":
